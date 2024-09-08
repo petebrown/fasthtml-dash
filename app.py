@@ -2,30 +2,49 @@ from fasthtml.common import *
 from trfc_data.h2h_all import *
 from trfc_data.player_apps import *
 
-def df_to_html(df, table_id=None):
+def df_to_html(df, table_id=None, extra_classes=None):
+    classes = ['table']
+    if extra_classes:
+        classes.extend(extra_classes)
+    class_list = ' '.join(classes)
     return Div(
         Table(
             Thead(Tr(*[Th(col) for col in df.columns])),
-            Tbody(*[Tr(*[Td(row[col]) for col in df.columns]) for idx, row in df.iterrows()])
-        ),
+            Tbody(*[Tr(*[Td(row[col]) for col in df.columns]) for idx, row in df.iterrows()]),
+        cls=f'{class_list}'),
         id=table_id
     )
 
-def df_to_html_expanded(df, table_id=None):
-    if 'game_date' in df.columns:
-        df['game_date'] = df['game_date'].dt.strftime('%d/%m/%Y')
-        df['game_date'] = df.apply(lambda row: A(f"{row['game_date']}", cls="btn btn-primary", href=f"#{row.name}", data_bs_toggle="collapse", role="button", aria_expanded="false", aria_controls=row.name), axis=1)
+def df_to_html_expanded(df, table_id=None, extra_classes=None):
+    classes = ['table']
+    if extra_classes:
+        classes.extend(extra_classes)
+    class_list = ' '.join(classes)
+
+    df['game_date_str'] = df['game_date'].astype(str)
+    df['game_date'] = df['game_date'].dt.strftime('%d/%m/%Y')
+    df['game_date'] = df.apply(lambda row: A(
+        f"{row['game_date']}",
+        cls = "btn btn-primary",
+        href = f"#{row.game_date_str}",
+        data_bs_toggle = "collapse",
+        role = "button",
+        aria_expanded = "false",
+        aria_controls = row.game_date_str,
+        hx_post = f'/match_details/{row.game_date_str}',
+        target_id = f'content_{row.game_date_str}',
+        hx_swap = 'innerHTML'),
+    axis=1)
     return Div(
         Table(
-            Thead(Tr(*[Th(col) for col in df.columns])),  # Table headers
+            Thead(Tr(*[Th(col) for col in df.columns[:-1]])),
             Tbody(
-                *[
-                    (Tr(*[Td(row[col]) for col in df.columns]),  # Match details
-                    Tr(Td(Div(f"Additional content for {row.game_date}"), colspan=len(df.columns)), cls="collapse", id=idx))  # Line-ups and table
+                *[(Tr(*[Td(row[col]) for col in df.columns[:-1]]),
+                   Tr(Td(Div(f"Additional content for {row.game_date_str}", id=f"content_{row.game_date_str}"), colspan=len(df.columns)-1), cls="collapse", id=row.game_date_str))
                     for idx, row in df.iterrows()
                 ]
-            )
-        ),
+            ),
+        cls=f'{class_list}'),
         id=table_id
     )
 
@@ -55,8 +74,8 @@ def get_season_options(reverse=True):
 cdn = 'https://cdn.jsdelivr.net/npm/bootstrap'
 bootstrap_links = [
     Link(href=cdn+"@5.3.3/dist/css/bootstrap.min.css", rel="stylesheet"),
-    Script(src=cdn+"@5.3.3/dist/js/bootstrap.bundle.min.js"),
-    Link(href=cdn+"-icons@1.11.3/font/bootstrap-icons.min.css", rel="stylesheet")
+    Link(href=cdn+"-icons@1.11.3/font/bootstrap-icons.min.css", rel="stylesheet"),
+    Script(src=cdn+"@5.3.3/dist/js/bootstrap.bundle.min.js")
 ]
 
 app = FastHTML(hdrs=bootstrap_links)
@@ -71,6 +90,49 @@ def home():
         Br(),
         A("Link to Head to Head page", href="/h2h"),
         cls='container')
+
+@app.get("/seasons")
+def seasons():
+    return Title("Seasons"), Div(
+        H1('Seasons'),
+        Form(
+            *[Div(
+                Input(
+                    cls="form-check-input",
+                    type="checkbox",
+                    value=f"{season}",
+                    id="flexCheckDefault",
+                    name="selected_seasons"
+                ),
+                Label(
+                    f"{season}",
+                    cls="form-check-label",
+                    _for="flexCheckDefault"
+                ),
+                cls="form-check") for season in get_season_list()],
+            Button('Submit'),
+            hx_post='/season', # Send selected season to @app.post('/season')
+            hx_target='#season_tabs' # Send response from @app.post('/season') to element with id='results_table'
+        ),
+        Div(id='season_tabs'),
+        cls='container')
+
+@app.post('/season')
+async def season_handler(request):
+    form_data = await request.form()
+    selected_seasons = [value for key, value in form_data.multi_items() if key == 'selected_seasons']
+
+    print(form_data)
+    print(selected_seasons)
+
+    # seasons = await request.form()
+    # seasons = [season for season in seasons.values()]
+    
+    # seasons.get('selected_seasons')
+    # print(seasons)
+    # df = all_results()[all_results().season.isin(seasons)].fillna('-')
+
+    return Div() #df_to_html_expanded(df)
 
 @app.get("/results")
 def results():
@@ -93,6 +155,11 @@ def results():
         H1('Results'),
         Div(tab, id='results_table'),
         cls='container')
+
+@app.post('/match_details/{game_date}')
+def match_details_handler(game_date: str):
+    df = filter_game(player_apps_df(), game_date)
+    return df_to_html(df, extra_classes=['table-sm'])
 
 @app.post('/season')
 async def season_handler(request):
@@ -119,6 +186,7 @@ def lineup():
         ),
         Div(df_to_html(filter_game(player_apps_df(), max(get_game_dates()))), id='line_up'), # Table that will be updated by @app.post('/line_up')
         cls='container')
+
 
 @app.post('/line_up')
 async def line_up_handler(request):
