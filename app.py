@@ -1,6 +1,7 @@
 from fasthtml.common import *
 from trfc_data.h2h_all import *
 from trfc_data.player_apps import *
+from trfc_data.league_tables import *
 
 def df_to_html(df, table_id=None, extra_classes=None):
     classes = ['table']
@@ -78,12 +79,14 @@ bootstrap_links = [
     Script(src=cdn+"@5.3.3/dist/js/bootstrap.bundle.min.js")
 ]
 
-app = FastHTML(hdrs=bootstrap_links)
+app = FastHTML(hdrs=bootstrap_links, live=True)
 
 @app.get("/")
 def home():
     return Title("Links"), Div(
         H1('Links'),
+        A("Link to Seasons page", href="/seasons"),
+        Br(),
         A("Link to Results page", href="/results"),
         Br(),
         A("Link to Line Up page", href="/line_ups"),
@@ -102,14 +105,15 @@ def seasons():
                     type="checkbox",
                     value=f"{season}",
                     id="flexCheckDefault",
-                    name="selected_seasons"
+                    name="selected_seasons",
+                    checked="checked" if i == 0 else None
                 ),
                 Label(
                     f"{season}",
                     cls="form-check-label",
                     _for="flexCheckDefault"
                 ),
-                cls="form-check") for season in get_season_list()],
+                cls="form-check") for i, season in enumerate(get_season_list()[:5])],
             Button('Submit'),
             hx_post='/season', # Send selected season to @app.post('/season')
             hx_target='#season_tabs' # Send response from @app.post('/season') to element with id='results_table'
@@ -119,20 +123,34 @@ def seasons():
 
 @app.post('/season')
 async def season_handler(request):
-    form_data = await request.form()
-    selected_seasons = [value for key, value in form_data.multi_items() if key == 'selected_seasons']
+    selected_seasons = await request.form()
+    selected_seasons = [value for key, value in selected_seasons.multi_items() if key == 'selected_seasons']
 
-    print(form_data)
-    print(selected_seasons)
+    return Div(
+            Ul(
+                *[Li(A(f"{season}",
+                        cls="nav-link",
+                        # cls="nav-link active" if i == 0 else "nav-link",
+                        href=f"#",
+                        role="tab",
+                        # aria_current="true" if i == 0 else None,
+                        id=f"{season}",
+                        hx_post=f"/season/{season.replace('/', '-')}",
+                        hx_target="#season_tab",
+                        hx_swap="innerHTML"),
+                    cls="nav-item") for i, season in enumerate(selected_seasons)],
+                cls="nav nav-tabs"),
+            Div(
+                df_to_html_expanded(all_results()[all_results().season==max(selected_seasons)], 'results_table'),
+                id="season_tab"),
+            cls="container")
 
-    # seasons = await request.form()
-    # seasons = [season for season in seasons.values()]
-    
-    # seasons.get('selected_seasons')
-    # print(seasons)
-    # df = all_results()[all_results().season.isin(seasons)].fillna('-')
-
-    return Div() #df_to_html_expanded(df)
+@app.get("/season/{ssn}", methods=["GET", "POST"])
+def season_tab(ssn: str):
+    ssn = ssn.replace('-', '/')
+    df = all_results()[all_results().season == ssn].fillna('-')
+    tab = df_to_html_expanded(df, 'results_table')
+    return Div(tab, id='results_table', cls='container')
 
 @app.get("/results")
 def results():
@@ -153,13 +171,23 @@ def results():
             hx_target='#results_table' # Send response from @app.post('/season') to element with id='results_table'
         ),
         H1('Results'),
-        Div(tab, id='results_table'),
+        Div(tab),
         cls='container')
 
 @app.post('/match_details/{game_date}')
 def match_details_handler(game_date: str):
-    df = filter_game(player_apps_df(), game_date)
-    return df_to_html(df, extra_classes=['table-sm'])
+    matchday_apps = filter_game(player_apps_df(), game_date)
+    league_table = filter_lge_table(league_tabs_df(), game_date)
+
+    matchday_apps = df_to_html(matchday_apps, extra_classes=['table-sm'])
+    league_table = df_to_html(league_table, extra_classes=['table-sm'])
+
+    return Div(
+        Div(
+            Div(matchday_apps, cls='col-sm'),
+            Div(league_table, cls='col-sm'),
+        cls='row'),
+        cls='container')
 
 @app.post('/season')
 async def season_handler(request):
