@@ -1,56 +1,89 @@
-from fasthtml.common import *
 import pandas as pd
-from trfc_data.utils import *
-from trfc_data.h2h_all import *
-from trfc_data.player_apps import *
-from trfc_data.league_tables import *
-from trfc_data.managers import *
+from trfc_data import *
+from fasthtml.common import *
+import json
+
+def df_to_json(df):
+    return json.dumps({
+        'columns': [{'header': col, 'accessorKey': col} for col in df.columns],
+        'data': df.to_dict(orient='records')
+    })
+
 
 def df_to_html(df, table_id=None, extra_classes=None):
     """
     Convert a pandas DataFrame to an HTML table.
-    Column names are used for the table headers.
     """
-    classes = ['table']
+    classes = ['table', 'display']  # 'display' class is used by DataTables
     if extra_classes:
         classes.extend(extra_classes)
     class_list = ' '.join(classes)
-    return Div(
-        Table(
-            Thead(Tr(*[Th(col) for col in df.columns])),
-            Tbody(*[Tr(*[Td(row[col]) for col in df.columns]) for idx, row in df.iterrows()]),
-        cls=f'{class_list}'),
-        id=table_id
+    
+    table_id = table_id or 'dataTable'  # Default ID if none provided
+    
+    return Table(
+        Thead(Tr(*[Th(col) for col in df.columns])),
+        Tbody(*[Tr(*[Td(row[col]) for col in df.columns]) for idx, row in df.iterrows()]),
+        id=table_id,
+        cls=f'{class_list}'
     )
 
 def df_to_html_expanded(df, table_id=None, extra_classes=None):
     """
     Convert a pandas DataFrame to an HTML table where the game_data
     column is converted to a button that triggers a collapse element.
-    Column names are used for the table headers.
+    The table is made sortable using DataTables.
     """
-    classes = ['table']
+    classes = ['table', 'display']  # 'display' class is used by DataTables
     if extra_classes:
         classes.extend(extra_classes)
     class_list = ' '.join(classes)
+    
     df['game_date_str'] = df['game_date'].astype(str)
     df['game_date'] = df['game_date'].dt.strftime('%d/%m/%Y')
     df['game_date'] = df.apply(lambda row: A(
-        f"{row['game_date']}", cls = "btn btn-primary", href = f"#{row.game_date_str}", data_bs_toggle = "collapse", role = "button", aria_expanded = "false", aria_controls = row.game_date_str,
-        hx_post = f'/match_details/{row.game_date_str}',
-        target_id = f'content_{row.game_date_str}',
-        hx_swap = 'innerHTML'),
-    axis=1)
+        f"{row['game_date']}", 
+        cls="btn btn-primary", 
+        href=f"#{row.game_date_str}", 
+        data_bs_toggle="collapse", 
+        role="button", 
+        aria_expanded="false", 
+        aria_controls=row.game_date_str,
+        hx_post=f'/match_details/{row.game_date_str}',
+        target_id=f'content_{row.game_date_str}',
+        hx_swap='innerHTML'
+    ), axis=1)
+    
+    table_id = table_id or 'dataTable'  # Default ID if none provided
+    
+    table = Table(
+        Thead(Tr(*[Th(col) for col in df.columns[:-1]])),  # Excludes temporary 'game_date_str' column
+        Tbody(
+            *[(Tr(*[Td(row[col]) for col in df.columns[:-1]]),
+               Tr(Td(Div("", id=f"content_{row.game_date_str}"), colspan=len(df.columns)-1), 
+                  cls="collapse", 
+                  id=row.game_date_str)) for idx, row in df.iterrows()
+            ]
+        ),
+        id=table_id,
+        cls=class_list
+    )
+    
     return Div(
-        Table(
-            Thead(Tr(*[Th(col) for col in df.columns[:-1]])), # Excludes temporary 'game_date_str' column
-            Tbody(
-                *[(Tr(*[Td(row[col]) for col in df.columns[:-1]]),
-                   Tr(Td(Div("", id=f"content_{row.game_date_str}"), colspan=len(df.columns)-1), cls="collapse", id=row.game_date_str)) for idx, row in df.iterrows()
-                ]
-            ),
-        cls = class_list),
-        id = table_id
+        table,
+        Script(f"""
+            $(document).ready(function() {{
+                $('#{table_id}').DataTable({{
+                    "order": [],
+                    "pageLength": 25,
+                    "lengthChange": false,
+                    "searching": true,
+                    "info": true,
+                    "paging": true
+                }});
+            }});
+        """),
+        cls='table-responsive'
     )
 
 def page_length_options(df, page_length=20):
@@ -65,13 +98,17 @@ def page_length_options(df, page_length=20):
     return [Option(str(o), value=str(o)) for o in page_length_options]
 
 cdn = 'https://cdn.jsdelivr.net/npm/bootstrap'
-bootstrap_links = [
+
+app, rt = fast_app(live=True, hdrs=[
     Link(href=cdn+"@5.3.3/dist/css/bootstrap.min.css", rel="stylesheet"),
     Link(href=cdn+"-icons@1.11.3/font/bootstrap-icons.min.css", rel="stylesheet"),
-    Script(src=cdn+"@5.3.3/dist/js/bootstrap.bundle.min.js")
-]
+    Link(rel="stylesheet", type="text/css", href="https://cdn.datatables.net/1.10.24/css/jquery.dataTables.css"),
+    Script(src=cdn+"@5.3.3/dist/js/bootstrap.bundle.min.js"),
+    Script(src="https://code.jquery.com/jquery-3.5.1.js"),
+    Script(src="https://cdn.datatables.net/1.10.24/js/jquery.dataTables.js"),
+    Script(src="https://cdn.jsdelivr.net/npm/@tanstack/table-core@8.9.3/dist/index.min.js"),
 
-app = FastHTML(hdrs=bootstrap_links, live=True)
+])
 
 @app.get("/")
 def home():
@@ -230,25 +267,62 @@ async def line_up_handler(request):
 
     return df_to_html(df)
 
+from fasthtml.common import *
+import pandas as pd
+
+def df_to_html(df, table_id=None, extra_classes=None):
+    """
+    Convert a pandas DataFrame to an HTML table with sortable columns using DataTables.
+    """
+    classes = ['table', 'display']  # 'display' class is used by DataTables
+    if extra_classes:
+        classes.extend(extra_classes)
+    class_list = ' '.join(classes)
+    
+    table_id = table_id or 'dataTable'  # Default ID if none provided
+    
+    return Table(
+        Thead(Tr(*[Th(col) for col in df.columns])),
+        Tbody(*[Tr(*[Td(row[col]) for col in df.columns]) for idx, row in df.iterrows()]),
+        id=table_id,
+        cls=f'{class_list}'
+    )
+
 @app.get("/h2h")
 def h2h():
     df = h2h_all(all_results()).fillna('-')
-    tab = df_to_html(df, 'h2h_table')
+    tab = df_to_html(df, 'h2h_table', extra_classes=['table-striped', 'table-bordered'])
     page_lengths = page_length_options(h2h_all(all_results()))
-    return Title("Head to Head Overview"), Div(
+    
+    return Title("Head to Head Overview"), Container(
         H1('Head to Head Overview'),
         Form(
             Select(
-                *page_lengths, # Create a list of Option elements
-                cls='form-select', # Add class 'form-select' to the select element
-                id='page_length' # Add id 'page_length' to the select element
+                *page_lengths,
+                cls='form-select',
+                id='page_length'
             ),
             Button('Submit'),
-            hx_post='/page_length', # Send selected page length to @app.post('/page_length')
-            hx_target='#h2h_table' # Send response from @app.post('/page_length') to element with id='h2h_table'
+            hx_post='/page_length',
+            hx_target='#table-container'
         ),
-        Div(tab, id='h2h_table'), # Table that will be updated by @app.post('/page_length')
-        cls='container')
+        Div(
+            tab,
+            id='table-container'
+        ),
+        Script("""
+            $(document).ready(function() {
+                $('#h2h_table').DataTable({
+                    "order": [],
+                    "pageLength": 25,
+                    "lengthChange": false,
+                    "searching": false,
+                    "info": false,
+                    "paging": false
+                });
+            });
+        """)
+    )
 
 @app.post('/page_length')
 async def page_length_handler(request):
@@ -256,8 +330,24 @@ async def page_length_handler(request):
     page_length = page_length.get('page_length')
     df = h2h_all(all_results())[:int(page_length)].fillna('-')
 
-    return df_to_html(df)
-
-print(results_with_managers())
+    tab = df_to_html(df, 'h2h_table', extra_classes=['table-striped', 'table-bordered'])
+    
+    return Div(
+        tab,
+        Script("""
+            $(document).ready(function() {
+                $('#h2h_table').DataTable({
+                    "order": [],
+                    "pageLength": 25,
+                    "lengthChange": false,
+                    "searching": false,
+                    "info": false,
+                    "paging": false,
+                    "destroy": true  // This allows re-initialization
+                });
+            });
+        """),
+        id='table-container'
+    )
 
 serve()
