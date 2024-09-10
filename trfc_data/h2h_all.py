@@ -1,11 +1,8 @@
-import pandas as pd
 from fasthtml.common import *
+import pandas as pd
 
 img_dir = 'https://raw.githubusercontent.com/petebrown/trfcdash/main/inst/app/www'
 data_dir = './data'
-
-def all_results():
-    return pd.read_csv(f'{data_dir}/results.csv', parse_dates=['game_date'])
 
 def filter_lge(df):
     return df[df.game_type == 'League']

@@ -1,9 +1,16 @@
 from fasthtml.common import *
+import pandas as pd
+from trfc_data.utils import *
 from trfc_data.h2h_all import *
 from trfc_data.player_apps import *
 from trfc_data.league_tables import *
+from trfc_data.managers import *
 
 def df_to_html(df, table_id=None, extra_classes=None):
+    """
+    Convert a pandas DataFrame to an HTML table.
+    Column names are used for the table headers.
+    """
     classes = ['table']
     if extra_classes:
         classes.extend(extra_classes)
@@ -17,60 +24,45 @@ def df_to_html(df, table_id=None, extra_classes=None):
     )
 
 def df_to_html_expanded(df, table_id=None, extra_classes=None):
+    """
+    Convert a pandas DataFrame to an HTML table where the game_data
+    column is converted to a button that triggers a collapse element.
+    Column names are used for the table headers.
+    """
     classes = ['table']
     if extra_classes:
         classes.extend(extra_classes)
     class_list = ' '.join(classes)
-
     df['game_date_str'] = df['game_date'].astype(str)
     df['game_date'] = df['game_date'].dt.strftime('%d/%m/%Y')
     df['game_date'] = df.apply(lambda row: A(
-        f"{row['game_date']}",
-        cls = "btn btn-primary",
-        href = f"#{row.game_date_str}",
-        data_bs_toggle = "collapse",
-        role = "button",
-        aria_expanded = "false",
-        aria_controls = row.game_date_str,
+        f"{row['game_date']}", cls = "btn btn-primary", href = f"#{row.game_date_str}", data_bs_toggle = "collapse", role = "button", aria_expanded = "false", aria_controls = row.game_date_str,
         hx_post = f'/match_details/{row.game_date_str}',
         target_id = f'content_{row.game_date_str}',
         hx_swap = 'innerHTML'),
     axis=1)
     return Div(
         Table(
-            Thead(Tr(*[Th(col) for col in df.columns[:-1]])),
+            Thead(Tr(*[Th(col) for col in df.columns[:-1]])), # Excludes temporary 'game_date_str' column
             Tbody(
                 *[(Tr(*[Td(row[col]) for col in df.columns[:-1]]),
-                   Tr(Td(Div(f"Additional content for {row.game_date_str}", id=f"content_{row.game_date_str}"), colspan=len(df.columns)-1), cls="collapse", id=row.game_date_str))
-                    for idx, row in df.iterrows()
+                   Tr(Td(Div("", id=f"content_{row.game_date_str}"), colspan=len(df.columns)-1), cls="collapse", id=row.game_date_str)) for idx, row in df.iterrows()
                 ]
             ),
-        cls=f'{class_list}'),
-        id=table_id
+        cls = class_list),
+        id = table_id
     )
 
 def page_length_options(df, page_length=20):
+    """ 
+    * Currently unused *
+    Create HTML options for the page length select element.
+    """
     n_records = len(df)
     page_length_options = list(range(page_length, n_records, page_length))
     if n_records % page_length != 0:
         page_length_options.append(n_records)
     return [Option(str(o), value=str(o)) for o in page_length_options]
-
-def filter_season(df, season):
-    return df[df.season == season]
-
-def get_game_dates(df=all_results(), reverse=True):
-    return sorted(df.game_date.unique(), reverse=reverse)
-
-def get_game_date_options(game_dates=get_game_dates()):
-    return [Option(str(game_date), value=str(game_date)) for game_date in game_dates]
-
-def get_season_list(reverse=True):
-    return sorted(all_results().season.unique(), reverse=reverse)
-
-def get_season_options(reverse=True):
-    seasons = get_season_list(reverse)
-    return [Option(str(season), value=str(season)) for season in seasons]
 
 cdn = 'https://cdn.jsdelivr.net/npm/bootstrap'
 bootstrap_links = [
@@ -94,11 +86,26 @@ def home():
         A("Link to Head to Head page", href="/h2h"),
         cls='container')
 
+# Function to create season list items
+def create_season_list_items(selected_seasons):
+    return Ul(
+        *[Li(A(f"{season}",
+                cls="nav-link",
+                href=f"#",
+                role="tab",
+                id=f"{season}",
+                hx_post=f"/season/{season.replace('/', '-')}",
+                hx_target="#season_tab",
+                hx_swap="innerHTML"),
+            cls="nav-item") for season in selected_seasons],
+        cls="nav nav-tabs"
+    )
+
 @app.get("/seasons")
 def seasons():
     return Title("Seasons"), Div(
         H1('Seasons'),
-        Form(
+        Form(Div(
             *[Div(
                 Input(
                     cls="form-check-input",
@@ -113,12 +120,13 @@ def seasons():
                     cls="form-check-label",
                     _for="flexCheckDefault"
                 ),
-                cls="form-check") for i, season in enumerate(get_season_list()[:5])],
-            Button('Submit'),
-            hx_post='/season', # Send selected season to @app.post('/season')
-            hx_target='#season_tabs' # Send response from @app.post('/season') to element with id='results_table'
-        ),
-        Div(id='season_tabs'),
+                cls="form-check") for i, season in enumerate(get_season_list())],
+            cls='overflow-auto',
+            style='max-height: 290px; width: 150px;'),
+            Button('Submit', cls='btn btn-primary'),
+            hx_post='/season',
+            hx_target='#season_tabs'),
+        Div(id='season_tabs', cls='container'),
         cls='container')
 
 @app.post('/season')
@@ -130,15 +138,13 @@ async def season_handler(request):
             Ul(
                 *[Li(A(f"{season}",
                         cls="nav-link",
-                        # cls="nav-link active" if i == 0 else "nav-link",
                         href=f"#",
                         role="tab",
-                        # aria_current="true" if i == 0 else None,
                         id=f"{season}",
                         hx_post=f"/season/{season.replace('/', '-')}",
                         hx_target="#season_tab",
                         hx_swap="innerHTML"),
-                    cls="nav-item") for i, season in enumerate(selected_seasons)],
+                    cls="nav-item") for season in selected_seasons],
                 cls="nav nav-tabs"),
             Div(
                 df_to_html_expanded(all_results()[all_results().season==max(selected_seasons)], 'results_table'),
@@ -148,7 +154,7 @@ async def season_handler(request):
 @app.get("/season/{ssn}", methods=["GET", "POST"])
 def season_tab(ssn: str):
     ssn = ssn.replace('-', '/')
-    df = all_results()[all_results().season == ssn].fillna('-')
+    df = all_results().query(f"season == '{ssn}'").fillna('-')
     tab = df_to_html_expanded(df, 'results_table')
     return Div(tab, id='results_table', cls='container')
 
@@ -167,11 +173,11 @@ def results():
                 id='season' # Add id 'season' to the select element
             ),
             Button('Submit'),
-            hx_post='/season', # Send selected season to @app.post('/season')
+            hx_post='/season-results', # Send selected season to @app.post('/season')
             hx_target='#results_table' # Send response from @app.post('/season') to element with id='results_table'
         ),
         H1('Results'),
-        Div(tab),
+        Div(tab, id='results_table'), # Table that will be updated by @app.post('/season')
         cls='container')
 
 @app.post('/match_details/{game_date}')
@@ -187,9 +193,9 @@ def match_details_handler(game_date: str):
             Div(matchday_apps, cls='col-sm'),
             Div(league_table, cls='col-sm'),
         cls='row'),
-        cls='container')
+        cls='container-fluid')
 
-@app.post('/season')
+@app.post('/season-results')
 async def season_handler(request):
     season = await request.form()
     season = season.get('season')
@@ -251,5 +257,7 @@ async def page_length_handler(request):
     df = h2h_all(all_results())[:int(page_length)].fillna('-')
 
     return df_to_html(df)
+
+print(results_with_managers())
 
 serve()

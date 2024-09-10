@@ -1,5 +1,5 @@
-import pandas as pd
 from fasthtml.common import *
+import pandas as pd
 
 img_dir = 'https://raw.githubusercontent.com/petebrown/trfcdash/main/inst/app/www'
 data_dir = './data'
