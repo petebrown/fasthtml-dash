@@ -30,61 +30,71 @@ def df_to_html(df, table_id=None, extra_classes=None):
 
 def df_to_html_expanded(df, table_id=None, extra_classes=None):
     """
-    Convert a pandas DataFrame to an HTML table where the game_data
-    column is converted to a button that triggers a collapse element.
-    The table is made sortable using DataTables.
+    Convert a pandas DataFrame to an HTML table with expandable row details using DataTables.
     """
-    classes = ['table', 'display']  # 'display' class is used by DataTables
+    classes = ['table', 'display']
     if extra_classes:
         classes.extend(extra_classes)
     class_list = ' '.join(classes)
     
-    df['game_date_str'] = df['game_date'].astype(str)
-    df['game_date'] = df['game_date'].dt.strftime('%d/%m/%Y')
-    df['game_date'] = df.apply(lambda row: A(
-        f"{row['game_date']}", 
-        cls="btn btn-primary", 
-        href=f"#{row.game_date_str}", 
-        data_bs_toggle="collapse", 
-        role="button", 
-        aria_expanded="false", 
-        aria_controls=row.game_date_str,
-        hx_post=f'/match_details/{row.game_date_str}',
-        target_id=f'content_{row.game_date_str}',
-        hx_swap='innerHTML'
-    ), axis=1)
+    table_id = table_id or 'dataTable'
     
-    table_id = table_id or 'dataTable'  # Default ID if none provided
+    df['game_date_str'] = df['game_date'].astype(str)
+    df['game_date_formatted'] = df['game_date'].dt.strftime('%d/%m/%Y')
+    
+    columns = [col for col in df.columns if col not in ['game_date_str']]
     
     table = Table(
-        Thead(Tr(*[Th(col) for col in df.columns[:-1]])),  # Excludes temporary 'game_date_str' column
+        Thead(Tr(*[Th(col) for col in columns])),
         Tbody(
-            *[(Tr(*[Td(row[col]) for col in df.columns[:-1]]),
-               Tr(Td(Div("", id=f"content_{row.game_date_str}"), colspan=len(df.columns)-1), 
-                  cls="collapse", 
-                  id=row.game_date_str)) for idx, row in df.iterrows()
-            ]
+            *[Tr(*[Td(row[col]) for col in columns],
+                  **{'data-game-date': row['game_date_str']}) 
+              for idx, row in df.iterrows()]
         ),
         id=table_id,
         cls=class_list
     )
     
-    return Div(
-        table,
-        Script(f"""
-            $(document).ready(function() {{
-                $('#{table_id}').DataTable({{
-                    "order": [],
-                    "pageLength": 25,
-                    "lengthChange": false,
-                    "searching": true,
-                    "info": true,
-                    "paging": true
-                }});
+    script = Script(f"""
+        (function() {{
+            var tableInstance = $('#{table_id}').DataTable({{
+                "order": [],
+                "pageLength": 25,
+                "columnDefs": [
+                    {{
+                        "targets": 0,
+                        "data": null,
+                        "defaultContent": '<button class="btn btn-primary btn-sm">+</button>',
+                        "orderable": false
+                    }}
+                ]
             }});
-        """),
-        cls='table-responsive'
-    )
+            
+            $('#{table_id} tbody').on('click', 'button', function () {{
+                var tr = $(this).closest('tr');
+                var row = tableInstance.row(tr);
+                var gameDate = tr.data('game-date');
+         
+                if (row.child.isShown()) {{
+                    row.child.hide();
+                    tr.removeClass('shown');
+                    $(this).text('+');
+                }} else {{
+                    $.ajax({{
+                        url: '/match_details/' + gameDate,
+                        type: 'POST',
+                        success: function(data) {{
+                            row.child(data).show();
+                            tr.addClass('shown');
+                            $(tr).find('button').text('-');
+                        }}
+                    }});
+                }}
+            }});
+        }})();
+    """)
+    
+    return table, script
 
 def page_length_options(df, page_length=20):
     """ 
@@ -105,9 +115,7 @@ app, rt = fast_app(live=True, hdrs=[
     Link(rel="stylesheet", type="text/css", href="https://cdn.datatables.net/1.10.24/css/jquery.dataTables.css"),
     Script(src=cdn+"@5.3.3/dist/js/bootstrap.bundle.min.js"),
     Script(src="https://code.jquery.com/jquery-3.5.1.js"),
-    Script(src="https://cdn.datatables.net/1.10.24/js/jquery.dataTables.js"),
-    Script(src="https://cdn.jsdelivr.net/npm/@tanstack/table-core@8.9.3/dist/index.min.js"),
-
+    Script(src="https://cdn.datatables.net/1.10.24/js/jquery.dataTables.js")
 ])
 
 @app.get("/")
@@ -140,6 +148,10 @@ def create_season_list_items(selected_seasons):
 
 @app.get("/seasons")
 def seasons():
+    initial_season = max(get_season_list())
+    initial_df = all_results()[all_results().season == initial_season].fillna('-')
+    initial_table, initial_script = df_to_html_expanded(initial_df, 'results_table')
+
     return Title("Seasons"), Div(
         H1('Seasons'),
         Form(Div(
@@ -148,45 +160,53 @@ def seasons():
                     cls="form-check-input",
                     type="checkbox",
                     value=f"{season}",
-                    id="flexCheckDefault",
+                    id=f"season_{season.replace('/', '_')}",
                     name="selected_seasons",
-                    checked="checked" if i == 0 else None
+                    checked="checked" if season == initial_season else None
                 ),
                 Label(
                     f"{season}",
                     cls="form-check-label",
-                    _for="flexCheckDefault"
+                    _for=f"season_{season.replace('/', '_')}"
                 ),
-                cls="form-check") for i, season in enumerate(get_season_list())],
+                cls="form-check") for season in get_season_list()],
             cls='overflow-auto',
             style='max-height: 290px; width: 150px;'),
             Button('Submit', cls='btn btn-primary'),
             hx_post='/season',
             hx_target='#season_tabs'),
         Div(id='season_tabs', cls='container'),
+        initial_table,
+        initial_script,
         cls='container')
-
+        
 @app.post('/season')
 async def season_handler(request):
     selected_seasons = await request.form()
     selected_seasons = [value for key, value in selected_seasons.multi_items() if key == 'selected_seasons']
 
+    if not selected_seasons:
+        selected_seasons = [max(get_season_list())]
+
+    df = all_results()[all_results().season.isin(selected_seasons)].fillna('-')
+    tab = df_to_html_expanded(df, 'results_table')
+
     return Div(
-            Ul(
-                *[Li(A(f"{season}",
-                        cls="nav-link",
-                        href=f"#",
-                        role="tab",
-                        id=f"{season}",
-                        hx_post=f"/season/{season.replace('/', '-')}",
-                        hx_target="#season_tab",
-                        hx_swap="innerHTML"),
-                    cls="nav-item") for season in selected_seasons],
-                cls="nav nav-tabs"),
-            Div(
-                df_to_html_expanded(all_results()[all_results().season==max(selected_seasons)], 'results_table'),
-                id="season_tab"),
-            cls="container")
+        Ul(
+            *[Li(A(f"{season}",
+                    cls="nav-link",
+                    href=f"#",
+                    role="tab",
+                    id=f"{season}",
+                    hx_post=f"/season/{season.replace('/', '-')}",
+                    hx_target="#season_tab",
+                    hx_swap="innerHTML"),
+                cls="nav-item") for season in selected_seasons],
+            cls="nav nav-tabs"),
+        Div(
+            tab,
+            id="season_tab"),
+        cls="container")
 
 @app.get("/season/{ssn}", methods=["GET", "POST"])
 def season_tab(ssn: str):
@@ -199,23 +219,25 @@ def season_tab(ssn: str):
 def results():
     df = all_results().fillna('-')
     df = filter_season(df, max(df.season))
-    tab = df_to_html_expanded(df, 'results_table')
+    table, script = df_to_html_expanded(df, 'results_table')
 
     season_options = get_season_options()
     return Title("Results"), Div(
         Form(
             Select(
-                *season_options, # Create a list of Option elements
-                cls='form-select', # Add class 'form-select' to the select element
-                id='season' # Add id 'season' to the select element
+                *season_options,
+                cls='form-select',
+                id='season'
             ),
             Button('Submit'),
-            hx_post='/season-results', # Send selected season to @app.post('/season')
-            hx_target='#results_table' # Send response from @app.post('/season') to element with id='results_table'
+            hx_post='/season-results',
+            hx_target='#results_container'
         ),
         H1('Results'),
-        Div(tab, id='results_table'), # Table that will be updated by @app.post('/season')
-        cls='container')
+        Div(table, id='results_container'),
+        script,
+        cls='container'
+    )
 
 @app.post('/match_details/{game_date}')
 def match_details_handler(game_date: str):
@@ -227,10 +249,12 @@ def match_details_handler(game_date: str):
 
     return Div(
         Div(
-            Div(matchday_apps, cls='col-sm'),
-            Div(league_table, cls='col-sm'),
-        cls='row'),
-        cls='container-fluid')
+            Div(matchday_apps, cls='col-sm-6'),
+            Div(league_table, cls='col-sm-6'),
+            cls='row'
+        ),
+        cls='container-fluid'
+    )
 
 @app.post('/season-results')
 async def season_handler(request):
@@ -348,6 +372,64 @@ async def page_length_handler(request):
             });
         """),
         id='table-container'
+    )
+
+@rt("/r-table")
+def get():
+    df = filter_season(all_results(), max(all_results().season))
+    df['game_date'] = df['game_date'].dt.strftime('%d/%m/%Y')
+    table_data = df_to_json(df)
+    
+    return Titled("TanStack Table Example",
+        Div(id="table-container"),
+        Script(f"""
+            import {{ createTable }} from 'https://cdn.jsdelivr.net/npm/@tanstack/table-core@latest/+esm';
+
+            document.addEventListener('DOMContentLoaded', function() {{
+                const tableData = {table_data};
+                
+                const columns = tableData.columns.map(col => ({{
+                    accessorKey: col.accessorKey,
+                    header: col.header
+                }}));
+
+                const table = createTable({{
+                    data: tableData.data,
+                    columns: columns,
+                }});
+
+                function renderTable() {{
+                    const container = document.getElementById('table-container');
+                    container.innerHTML = '';
+
+                    const tableElement = document.createElement('table');
+                    tableElement.className = 'table table-striped';
+
+                    // Render header
+                    const thead = tableElement.createTHead();
+                    const headerRow = thead.insertRow();
+                    columns.forEach(column => {{
+                        const th = document.createElement('th');
+                        th.textContent = column.header;
+                        headerRow.appendChild(th);
+                    }});
+
+                    // Render rows
+                    const tbody = tableElement.createTBody();
+                    tableData.data.forEach(rowData => {{
+                        const tr = tbody.insertRow();
+                        columns.forEach(column => {{
+                            const td = tr.insertCell();
+                            td.textContent = rowData[column.accessorKey];
+                        }});
+                    }});
+
+                    container.appendChild(tableElement);
+                }}
+
+                renderTable();
+            }});
+        """, type="module")
     )
 
 serve()
