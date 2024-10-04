@@ -9,6 +9,15 @@ def df_to_json(df):
         'data': df.to_dict(orient='records')
     })
 
+def table_to_datatable(table, table_id, page_length=25):
+    return table, Script(f"""
+        $(document).ready(function() {{
+            $('#{table_id}').DataTable({{
+                "order": [],
+                "pageLength": {page_length}
+            }});
+        }});
+    """)
 
 def df_to_html(df, table_id=None, extra_classes=None):
     """
@@ -244,8 +253,10 @@ def match_details_handler(game_date: str):
     matchday_apps = filter_game(player_apps_df(), game_date)
     league_table = filter_lge_table(league_tabs_df(), game_date)
 
-    matchday_apps = df_to_html(matchday_apps, extra_classes=['table-sm'])
-    league_table = df_to_html(league_table, extra_classes=['table-sm'])
+    matchday_apps = df_to_html(matchday_apps, table_id=f'{game_date}_apps', extra_classes=['table-sm'])
+    matchday_apps = table_to_datatable(matchday_apps, f'{game_date}_apps')
+    league_table = df_to_html(league_table, table_id=f'{game_date}_table', extra_classes=['table-sm'])
+    league_table = table_to_datatable(league_table, f'{game_date}_table')
 
     return Div(
         Div(
