@@ -2,6 +2,7 @@ from fasthtml.common import *
 from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
+import json
 
 
 # Connect to your existing database
@@ -419,7 +420,11 @@ def get(request, player_id: str,
             ),
             Tbody(
                 *[Tr(
-                    Td(datetime.strptime(app['game_date'], '%Y-%m-%d').strftime('%d/%m/%Y')),
+                    Td(A(
+                        datetime.strptime(app['game_date'], '%Y-%m-%d').strftime('%d/%m/%Y'),
+                        href=f"/game/{app['game_date']}",
+                        cls="date-link"
+                    )),
                     Td(app['opposition']),
                     Td(app['venue']),
                     Td(app['competition']),
@@ -625,7 +630,11 @@ def get(player_id: str, group_by: str = 'overall'):
                     ),
                     Tbody(
                         *[Tr(
-                            Td(datetime.strptime(app['game_date'], '%Y-%m-%d').strftime('%d/%m/%Y')),
+                            Td(A(
+                                datetime.strptime(app['game_date'], '%Y-%m-%d').strftime('%d/%m/%Y'),
+                                href=f"/game/{app['game_date']}",
+                                cls="date-link"
+                            )),
                             Td(app['opposition']),
                             Td(app['venue']),
                             Td(app['competition']),
@@ -896,8 +905,201 @@ def get(player_id: str, group_by: str = 'overall'):
                 .page-info {
                     margin: 0 1rem;
                 }
+                  
+                .date-link {
+                  color: var(--primary);
+                  text-decoration: none;
+                }
+                
+                .date-link:hover {
+                  text-decoration: underline;
+                }
             """),
             A("← Back to Players", href="/", cls="button"),
+        )
+    )
+
+@rt('/game/{game_date}')
+def get(game_date: str):
+    # Validate date format
+    try:
+        datetime.strptime(game_date, '%Y-%m-%d')
+    except ValueError:
+        return Titled("Invalid Date Format",
+            Container(
+                H2("Invalid date format"),
+                P("Please use the format YYYY-MM-DD"),
+                A("← Back to Players", href="/", cls="button")
+            )
+        )
+
+    # Get game details
+    game_cursor = db.conn.execute('''
+        SELECT * FROM results WHERE game_date = ?
+    ''', [game_date])
+    
+    game_row = game_cursor.fetchone()
+    if not game_row:
+        return Titled("Game Not Found",
+            Container(
+                H2("No game found for this date"),
+                P(f"There was no game played on {game_date}"),
+                A("← Back to Players", href="/", cls="button")
+            )
+        )
+        
+    game_details = dict(zip([d[0] for d in game_cursor.description], game_row))
+    
+    # Get match stats if available
+    stats_cursor = db.conn.execute('''
+        SELECT * FROM match_stats WHERE game_date = ?
+    ''', [game_date])
+    match_stats = [dict(zip([d[0] for d in stats_cursor.description], row)) 
+                  for row in stats_cursor.fetchall()]
+    
+    # Get league table if it's a league game
+    league_table = []
+    if game_details['game_type'] == 'League':
+        table_cursor = db.conn.execute('''
+            SELECT * FROM league_tables 
+            WHERE game_date = ? 
+            ORDER BY pos
+        ''', [game_date])
+        league_table = [dict(zip([d[0] for d in table_cursor.description], row)) 
+                       for row in table_cursor.fetchall()]
+
+    home_stats = next((s for s in match_stats if s['team_venue'] == 'home'), None)
+    away_stats = next((s for s in match_stats if s['team_venue'] == 'away'), None)
+
+    stats_fields = [
+        ('possessionPercentage', 'Possession %'),
+        ('shotsTotal', 'Total Shots'),
+        ('shotsOnTarget', 'Shots on Target'),
+        ('shotsOffTarget', 'Shots off Target'),
+        ('shotsBlocked', 'Blocked Shots'),
+        ('shotsSaved', 'Saves'),
+        ('foulsCommitted', 'Fouls'),
+        ('cornersWon', 'Corners'),
+        ('touchesInBox', 'Touches in Box'),
+        ('aerialsWon', 'Aerials Won')
+    ]
+
+    return Titled(f"Match Details - {game_date}",
+        Container(
+            A("← Back to Players", href="/", cls="button"),
+            
+            # Match Details Card
+            Card(
+                H2("Match Details", cls="text-center"),
+                Table(
+                    Tbody(
+                        Tr(Td("Competition"), Td(game_details['competition'])),
+                        Tr(Td("Opposition"), Td(game_details['opposition'])),
+                        Tr(Td("Venue"), Td(game_details['venue'])),
+                        Tr(Td("Score"), Td(game_details['score'])),
+                        Tr(Td("Outcome"), Td(game_details['outcome'])),
+                        Tr(Td("Attendance"), Td(str(game_details['attendance']))),
+                        Tr(Td("Referee"), Td(game_details['referee'])),
+                        Tr(Td("Kickoff Time"), Td(game_details['ko_time'])),
+                        Tr(Td("Stadium"), Td(game_details['stadium'])),
+                        Tr(Td("League Position"), Td(str(game_details['league_pos']))),
+                        Tr(Td("League Points"), Td(str(game_details['league_pts'])))
+                    ),
+                    cls="match-details-table"
+                )
+            ),
+
+            # Match Stats Card (if stats exist)
+            Card(
+                H2("Match Statistics", cls="text-center"),
+                Table(
+                    Thead(
+                        Tr(
+                            Th(home_stats['team_name'] if home_stats else 'Home'),
+                            Th("Statistic"),
+                            Th(away_stats['team_name'] if away_stats else 'Away')
+                        )
+                    ),
+                    Tbody(
+                        *[Tr(
+                            Td(str(home_stats[key]) if home_stats else '-'),
+                            Td(label),
+                            Td(str(away_stats[key]) if away_stats else '-')
+                        ) for key, label in stats_fields]
+                    ) if home_stats and away_stats else [
+                        Tr(Td("No statistics available", colspan="3", cls="text-center"))
+                    ],
+                    cls="match-stats-table"
+                )
+            ) if match_stats else None,
+
+            # League Table Card (if league game)
+            Card(
+                H2("League Table", cls="text-center"),
+                Table(
+                    Thead(
+                        Tr(
+                            Th("Pos"),
+                            Th("Team"),
+                            Th("P"),
+                            Th("W"),
+                            Th("D"),
+                            Th("L"),
+                            Th("GF"),
+                            Th("GA"),
+                            Th("GD"),
+                            Th("Pts")
+                        )
+                    ),
+                    Tbody(
+                        *[Tr(
+                            Td(str(row['pos'])),
+                            Td(row['team_name']),
+                            Td(str(row['pld'])),
+                            Td(str(row['w'])),
+                            Td(str(row['d'])),
+                            Td(str(row['l'])),
+                            Td(str(row['gf'])),
+                            Td(str(row['ga'])),
+                            Td(str(row['gd'])),
+                            Td(str(row['pts']))
+                        ) for row in league_table]
+                    ) if league_table else [
+                        Tr(Td("No league table available", colspan="10", cls="text-center"))
+                    ],
+                    cls="league-table"
+                )
+            ) if game_details['game_type'] == 'League' else None,
+
+            Style("""
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-bottom: 1rem;
+                }
+                th, td {
+                    padding: 0.75rem;
+                    text-align: left;
+                    border-bottom: 1px solid var(--card-border-color);
+                }
+                th {
+                    font-weight: bold;
+                    background: var(--card-background-color);
+                }
+                .match-stats-table td:first-child,
+                .match-stats-table td:last-child {
+                    text-align: center;
+                }
+                .league-table td {
+                    text-align: center;
+                }
+                .league-table td:nth-child(2) {
+                    text-align: left;
+                }
+                .text-center {
+                    text-align: center;
+                }
+            """)
         )
     )
 
