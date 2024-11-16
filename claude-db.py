@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
 import json
+import pandas as pd
 
 
 # Connect to your existing database
@@ -1268,8 +1269,9 @@ def post(data: dict):
     ]
     
     manager_records = filter_managers(data)
+    manager_streaks = get_manager_streaks(data)
 
-    return data, Card(
+    return data, manager_streaks, Card(
         H2("Overall Records", cls="text-center"),
         Table(
             Thead(
@@ -1285,15 +1287,30 @@ def post(data: dict):
         )
     )
 
+def join_list(lst):
+    return ','.join(f"'{l.replace("'", "''")}'" for l in lst)
+
 def filter_managers(data):
-    league_tiers = ','.join(f"'{t}'" for t in data['league_tier'])
+    if 'league_tier' in data:
+        league_tiers = join_list(data['league_tier'])
+    else:
+        league_tiers = None
+    if 'competition' in data:
+        competitions = join_list(data['competition'])
+    else:
+        competitions = None
+
     venues = ','.join(f"'{v}'" for v in data['venue'])
-    competitions = ','.join(f"'{c.replace("'", "''")}'" for c in data['competition'])
+
+    min_games = data['min_games']
     
-    filters = f'AND '
-    
-    if len(league_tiers) > 0 and len(competitions) > 0:
+    filters = 'AND '
+    if league_tiers and competitions:
         filters += f"(slt.league_tier IN ({league_tiers}) OR r.competition IN ({competitions}))"
+    elif league_tiers:
+        filters += f"slt.league_tier IN ({league_tiers})"
+    elif competitions:
+        filters += f"r.competition IN ({competitions})"
 
     query  = f'''
         SELECT 
@@ -1311,15 +1328,13 @@ def filter_managers(data):
             AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
         LEFT JOIN managers m ON mr.manager_id = m.manager_id
         LEFT JOIN season_league_tiers slt ON r.season = slt.season AND r.game_type = 'League'
-        WHERE CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) >= {data['min_season']}
-            AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) <= {data['max_season']}
-        r.venue IN ({venues})
+        WHERE CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) >= {data['min_season']} AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) <= {data['max_season']}
+            AND r.venue IN ({venues})
             {filters}
         GROUP BY m.manager_name
+        HAVING COUNT(*) >= {min_games}
         ORDER BY P DESC
     '''
-
-    print(query)
     
     managers_cursor = db.conn.execute(
         query
@@ -1327,6 +1342,75 @@ def filter_managers(data):
     
     managers = [dict(zip([d[0] for d in managers_cursor.description], row)) for row in managers_cursor.fetchall()]
     return managers
+
+def get_manager_streaks(data: dict):
+    if 'league_tier' in data:
+        league_tiers = join_list(data['league_tier'])
+    else:
+        league_tiers = None
+    if 'competition' in data:
+        competitions = join_list(data['competition'])
+    else:
+        competitions = None
+
+    venues = ','.join(f"'{v}'" for v in data['venue'])
+
+    min_games = data['min_games']
+    
+    filters = 'AND '
+    if league_tiers and competitions:
+        filters += f"(slt.league_tier IN ({league_tiers}) OR r.competition IN ({competitions}))"
+    elif league_tiers:
+        filters += f"slt.league_tier IN ({league_tiers})"
+    elif competitions:
+        filters += f"r.competition IN ({competitions})"
+
+    query  = f'''
+        SELECT 
+            m.manager_name,
+            r.*
+        FROM results r
+        LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
+            AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
+        LEFT JOIN managers m ON mr.manager_id = m.manager_id
+        LEFT JOIN season_league_tiers slt ON r.season = slt.season AND r.game_type = 'League'
+        WHERE CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) >= {data['min_season']} AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) <= {data['max_season']}
+            AND r.venue IN ({venues})
+            {filters}
+    '''
+
+    # Load base data
+    df = pd.read_sql(query, db.conn)
+
+    print(df.columns)
+
+    # Basic stats
+    stats = df.groupby('manager_name').agg({
+        'outcome': ['count',
+                lambda x: (x == 'W').sum(),
+                lambda x: (x == 'D').sum(),
+                lambda x: (x == 'L').sum()],
+        'goals_for': 'sum',
+        'goals_against': 'sum'
+    }).reset_index()
+
+    # Calculate streaks
+    def get_streak_lengths(group, condition):
+        # Creates groups of consecutive True values and returns their lengths
+        streak_groups = (group != group.shift()).cumsum()
+        return group.groupby(streak_groups).sum()
+
+    # Example for win streaks
+    df['is_win'] = df['outcome'] == 'W'
+    streaks = df.groupby('manager_name')['is_win'].apply(
+        lambda x: get_streak_lengths(x, True).max()
+    )
+
+    # Similarly for other streaks...
+    df['is_unbeaten'] = df['outcome'] != 'L'
+    df['is_clean_sheet'] = df['goals_against'] == 0
+    # etc.
+    return df
 
 serve()
 
