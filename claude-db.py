@@ -1290,8 +1290,12 @@ def filter_managers(data):
     venues = ','.join(f"'{v}'" for v in data['venue'])
     competitions = ','.join(f"'{c.replace("'", "''")}'" for c in data['competition'])
     
-    managers_cursor = db.conn.execute(
-        f'''
+    filters = f'AND '
+    
+    if len(league_tiers) > 0 and len(competitions) > 0:
+        filters += f"(slt.league_tier IN ({league_tiers}) OR r.competition IN ({competitions}))"
+
+    query  = f'''
         SELECT 
             m.manager_name,
             COUNT(*) as P,
@@ -1301,19 +1305,24 @@ def filter_managers(data):
             SUM(r.goals_for) as GF,
             SUM(r.goals_against) as GA,
             SUM(r.goals_for) - SUM(r.goals_against) as GD,
-            ROUND(CAST(COUNT(CASE WHEN r.outcome = 'W' THEN 1 END) AS FLOAT) / COUNT(*), 2) as win_pc
+            ROUND(CAST(COUNT(CASE WHEN r.outcome = 'W' THEN 1 END) AS FLOAT) / COUNT(*) * 100, 2) as win_pc
         FROM results r
         LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
             AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
         LEFT JOIN managers m ON mr.manager_id = m.manager_id
         LEFT JOIN season_league_tiers slt ON r.season = slt.season AND r.game_type = 'League'
-        WHERE (slt.league_tier IN ({league_tiers}) OR r.competition IN ({competitions}))
-            AND r.venue IN ({venues})
-            AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) >= {data['min_season']}
+        WHERE CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) >= {data['min_season']}
             AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) <= {data['max_season']}
+        r.venue IN ({venues})
+            {filters}
         GROUP BY m.manager_name
         ORDER BY P DESC
-        '''
+    '''
+
+    print(query)
+    
+    managers_cursor = db.conn.execute(
+        query
     )
     
     managers = [dict(zip([d[0] for d in managers_cursor.description], row)) for row in managers_cursor.fetchall()]
