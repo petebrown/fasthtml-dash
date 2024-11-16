@@ -9,7 +9,13 @@ import json
 db = database('trfc.db')
 
 # Create your FastHTML app and get route decorator
-app, rt = fast_app()
+app, rt = fast_app(
+    hdrs = (
+        Link(rel="stylesheet", href="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/css/selectize.default.min.css"),
+        Script(src="https://code.jquery.com/jquery-3.6.0.min.js"),
+        Script(src="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/js/selectize.min.js"),
+    )
+)
 
 def get_players(search_term=None, sort_by='display_name', sort_dir='asc'):
     query = '''SELECT player_id, display_name, player_name, surname, forename,
@@ -1103,4 +1109,215 @@ def get(game_date: str):
         )
     )
 
+@rt("/seasons")
+def get(): 
+   seasons = db.query("SELECT DISTINCT season FROM results ORDER BY season DESC")
+   seasons = [s['season'] for s in seasons]
+   return Form(
+       Div(
+           *[Div(Label(CheckboxX(id=s, name="seasons[]", value=s), s)) for s in seasons],
+           style="max-height: 300px; overflow-y: auto;"
+       ),
+       Button("Submit"), 
+       hx_post="/filter"
+   )
+
+
+@rt("/managers")
+def get():
+    return Title("All Managers"), Div(
+        Div(
+            H1("All managers"),
+            Form(
+                P('Season range'),
+                Input(type="range", name="min_season", min=1921, max=2024, value=1921),
+                Input(type="range", name="max_season", min=1921, max=2024, value=2024),
+                Hr(),
+
+                Fieldset(
+                    Legend('League Tiers'),
+                    Label(
+                        Input(type='checkbox', name='league_tier', value=2, checked='checked'),
+                        "2: Championship",
+                    ),
+                    Label(
+                        Input(type='checkbox', name='league_tier', value=3, checked='checked'),
+                        "3: League One"
+                    ),
+                    Label(
+                        Input(type='checkbox', name='league_tier', value=4, checked='checked'),
+                        "4: League Two"
+                    ),
+                    Label(
+                        Input(type='checkbox', name='league_tier', value=5, checked='checked'),
+                        "5: National League"
+                    )
+                ),
+                Button("All leagues"),
+                Button("Clear", cls="secondary"),
+                Hr(),
+
+                Fieldset(
+                    Legend("Include play-off games?"),
+                    Label(
+                        Input(type="radio", name="play_offs", value="Y", checked="checked"),
+                        "Yes"
+                    ),
+                    Label(
+                        Input(type="radio", name="play_offs", value="N"),
+                        "No"
+                    )
+                ),
+                Hr(),
+
+                Fieldset(
+                    Legend("Cup competitions:"),
+                    Label(
+                        Input(type="checkbox", name="competition", value="Anglo-Italian Cup", checked="checked"),
+                        "Anglo-Italian Cup"
+                    ),
+                    Label(
+                        Input(type="checkbox", name="competition", value="Associate Members' Cup", checked="checked"),
+                        "Associate Members' Cup"
+                    ),
+                    Label(
+                        Input(type="checkbox", name="competition", value="FA Cup", checked="checked"),
+                        "FA Cup"
+                    ),
+                    Label(
+                        Input(type="checkbox", name="competition", value="FA Trophy", checked="checked"),
+                        "FA Trophy"
+                    ),
+                    Label(
+                        Input(type="checkbox", name="competition", value="Full Members' Cup", checked="checked"),
+                        "Full Members' Cup"
+                    ),
+                    Label(
+                        Input(type="checkbox", name="competition", value="League Cup", checked="checked"),
+                        "League Cup"
+                    ),
+                    Label(
+                        Input(type="checkbox", name="competition", value="War League", checked="checked"),
+                        "War League"
+                    )
+                ),
+                Button("All cups"),
+                Button("Clear", cls="secondary"),
+                Hr(),
+                
+                Fieldset(
+                    Legend('Venues'),
+                    Label(
+                        Input(type='checkbox', name='venue', value='H', checked='checked'),
+                        "Home"
+                    ),
+                    Label(
+                        Input(type='checkbox', name='venue', value='A', checked='checked'),
+                        "Away"
+                    ),
+                    Label(
+                        Input(type='checkbox', name='venue', value='N', checked='checked'),
+                        "Neutral"
+                    )
+                ),
+                Hr(),
+
+                Label(
+                    'Minimum number of games managed:',
+                    Input(type="range", name="min_games", min=1, max=100, value=10)
+                ),
+                id="manager-options", hx_trigger="input", hx_post="/managers-update", hx_target="#man_records", hx_swap="innerHTML"
+            ),
+            Hr(),
+            Button("Reset all", cls="secondary")
+        ),
+        Div(
+            Div("", id="man_records")
+        ),
+        cls="container-fluid"
+    )
+
+@rt("/managers-update")
+def post(data: dict):
+    """Handle POST request to update manager statistics table.
+    
+    Args:
+        data: Dictionary containing filter parameters
+        
+    Returns:
+        Tuple of (data, Card) containing filtered manager statistics
+    """
+    def format_cell(value, col):
+        """Format cell value based on column type."""
+        if value is None:
+            return "-"
+        if col == 'win_pc':
+            return f"{value:.1f}%"
+        return str(value)
+
+    columns = [
+        ('manager_name', 'Manager'),
+        ('P', 'P'),
+        ('W', 'W'),
+        ('D', 'D'),
+        ('L', 'L'),
+        ('GF', 'GF'),
+        ('GA', 'GA'),
+        ('GD', 'GD'),
+        ('win_pc', 'Win %')
+    ]
+    
+    manager_records = filter_managers(data)
+
+    return data, Card(
+        H2("Overall Records", cls="text-center"),
+        Table(
+            Thead(
+                Tr(*[Th(header) for _, header in columns])
+            ),
+            Tbody(
+                *[Tr(
+                    *[Td(format_cell(record[col], col)) 
+                      for col, _ in columns]
+                ) for record in manager_records]
+            ),
+            cls="table table-striped table-hover"
+        )
+    )
+
+def filter_managers(data):
+    league_tiers = ','.join(f"'{t}'" for t in data['league_tier'])
+    venues = ','.join(f"'{v}'" for v in data['venue'])
+    competitions = ','.join(f"'{c.replace("'", "''")}'" for c in data['competition'])
+    
+    managers_cursor = db.conn.execute(
+        f'''
+        SELECT 
+            m.manager_name,
+            COUNT(*) as P,
+            COUNT(CASE WHEN r.outcome = 'W' THEN 1 END) as W,
+            COUNT(CASE WHEN r.outcome = 'D' THEN 1 END) as D,
+            COUNT(CASE WHEN r.outcome = 'L' THEN 1 END) as L,
+            SUM(r.goals_for) as GF,
+            SUM(r.goals_against) as GA,
+            SUM(r.goals_for) - SUM(r.goals_against) as GD,
+            ROUND(CAST(COUNT(CASE WHEN r.outcome = 'W' THEN 1 END) AS FLOAT) / COUNT(*), 2) as win_pc
+        FROM results r
+        LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
+            AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
+        LEFT JOIN managers m ON mr.manager_id = m.manager_id
+        LEFT JOIN season_league_tiers slt ON r.season = slt.season AND r.game_type = 'League'
+        WHERE (slt.league_tier IN ({league_tiers}) OR r.competition IN ({competitions}))
+            AND r.venue IN ({venues})
+            AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) >= {data['min_season']}
+            AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) <= {data['max_season']}
+        GROUP BY m.manager_name
+        ORDER BY P DESC
+        '''
+    )
+    
+    managers = [dict(zip([d[0] for d in managers_cursor.description], row)) for row in managers_cursor.fetchall()]
+    return managers
+
 serve()
+
