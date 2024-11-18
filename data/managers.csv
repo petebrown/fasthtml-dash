@@ -1,4 +1,4 @@
-manager_id,surname,forename,manager_name,manager_dob,dob_year
+manager_id,manager_surname,manager_forename,manager_name,manager_dob,manager_dob_year
 AdamsMickey19611108,Adams,Mickey,Mickey Adams,1961-11-08,
 AdkinsNigel19650311,Adkins,Nigel,Nigel Adkins,1965-03-11,
 AldridgeJohn19580918,Aldridge,John,John Aldridge,1958-09-18,

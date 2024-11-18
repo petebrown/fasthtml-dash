@@ -1,4 +1,4 @@
-game_date,player_id,player_name,card_type,minute
+game_date,player_id,player_name,card_type,card_min
 1967-08-19,CaseyGerry19410825,Gerry Casey,red,49
 1984-05-21,HigginsDave19610819,Dave Higgins,yellow,
 1984-05-21,HigginsDave19610819,Dave Higgins,red,89
