@@ -1126,7 +1126,7 @@ def get():
 
 @rt("/managers")
 def get():
-    return Title("All Managers"), Div(
+    return Title("All Managers"), Grid(
         Div(
             H1("All managers"),
             Form(
@@ -1234,8 +1234,7 @@ def get():
         ),
         Div(
             Div("", id="man_records")
-        ),
-        cls="container-fluid"
+        )
     )
 
 @rt("/managers-update")
