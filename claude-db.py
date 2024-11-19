@@ -42,7 +42,7 @@ def get_players(search_term=None, sort_by='display_name', sort_dir='asc'):
 
 def create_filter_form(player_id, filter_values, date_from, date_to, opponent, competition, role, per_page=20):
     return Form(
-        Grid(
+        Div(
             Group(
                 Label("Date Range"),
                 Input(
@@ -1126,7 +1126,7 @@ def get():
 
 @rt("/managers")
 def get():
-    return Title("All Managers"), Grid(
+    return Title("All Managers"), Div(
         Div(
             H1("All managers"),
             Form(
@@ -1271,17 +1271,17 @@ def post(data: dict):
     manager_streaks = get_manager_streaks(data)
 
     return data, manager_streaks, Card(
-        H2("Overall Records", cls="text-center"),
-        Table(
-            Thead(
-                Tr(*[Th(header) for _, header in columns])
-            ),
-            Tbody(
-                *[Tr(
-                    *[Td(format_cell(record[col], col)) 
-                      for col, _ in columns]
-                ) for record in manager_records]
-            ),
+        H2("Overall Records"),
+        Grid(
+            # Div(
+                Grid(*[Div(header) for _, header in columns]),
+            # ),
+            # Div(
+                *[Grid(
+                    *[Div(format_cell(record[col], col)) 
+                      for col, _ in columns],
+                id=f"{record['manager_name']}") for record in manager_records],
+            # ),
             cls="table table-striped table-hover"
         )
     )
