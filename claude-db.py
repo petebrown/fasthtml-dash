@@ -1286,15 +1286,15 @@ def post(data: dict):
                 *[Div(header) for _, header in columns],
                 style="display: grid; grid-template-columns: repeat(10, 1fr); font-weight: bold;"
             ),
-                *[Div(Span("→ Show", id=f"expand-{record['manager_name']}", onclick=f"toggleRequestInfo('{record['manager_name']}')", style="cursor: pointer;", hx_get=f"/manager-rec/{record['manager_name']}", hx_target=f"#expanded-{record['manager_name'].replace(' ', '_') if record['manager_name'] else ''}"),
-                    *[Div(Div(format_cell(record[col], col))) 
+                *[Div(Div(Span("→ Show", id=f"expand-{record['manager_name']}", onclick=f"toggleRequestInfo('{record['manager_name']}')", style="cursor: pointer;", hx_get=f"/manager-rec/{record['manager_name']}", hx_target=f"#expanded-{record['manager_name'].replace(' ', '_') if record['manager_name'] else ''}"),
+                    *[Div(format_cell(record[col], col))
                       for col, _ in columns],
+                style="display: grid; grid-template-columns: repeat(10, 1fr);"
+                ),
                 Span(
                     id=f"expanded-{record['manager_name'].replace(' ', '_') if record['manager_name'] else ''}",
                 ),
-                id=f"{record['manager_name']}",
-                style="display: grid; grid-template-columns: repeat(10, 1fr);"
-                ) for record in manager_records],
+                id=f"{record['manager_name']}") for record in manager_records],
         style="display: grid; gap: 1rem;"
         )
     ), Script(
