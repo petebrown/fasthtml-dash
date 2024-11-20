@@ -14,7 +14,7 @@ app, rt = fast_app(
     hdrs = (
         Link(rel="stylesheet", href="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/css/selectize.default.min.css"),
         Script(src="https://code.jquery.com/jquery-3.6.0.min.js"),
-        Script(src="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/js/selectize.min.js"),
+        Script(src="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/js/selectize.min.js")
     )
 )
 
@@ -1237,6 +1237,14 @@ def get():
         )
     )
 
+@rt("/manager-rec/{manager_name}")
+def get(manager_name: str):
+    return Div(
+        print(manager_name),
+        H1(f"{manager_name}")
+    )
+
+
 @rt("/managers-update")
 def post(data: dict):
     """Handle POST request to update manager statistics table.
@@ -1272,24 +1280,46 @@ def post(data: dict):
 
     return data, manager_streaks, Card(
         H2("Overall Records"),
-        Grid(
-            # Div(
-                Grid(*[Div(header) for _, header in columns]),
-            # ),
-            # Div(
-                *[Grid(
-                    *[Div(format_cell(record[col], col)) 
+        Div(
+            # Header row
+            Div(Span(),
+                *[Div(header) for _, header in columns],
+                style="display: grid; grid-template-columns: repeat(10, 1fr); font-weight: bold;"
+            ),
+                *[Div(Span("→ Show", id=f"expand-{record['manager_name']}", onclick=f"toggleRequestInfo('{record['manager_name']}')", style="cursor: pointer;", hx_get=f"/manager-rec/{record['manager_name']}", hx_target=f"#expanded-{record['manager_name'].replace(' ', '_') if record['manager_name'] else ''}"),
+                    *[Div(Div(format_cell(record[col], col))) 
                       for col, _ in columns],
-                id=f"{record['manager_name']}") for record in manager_records],
-            # ),
-            cls="table table-striped table-hover"
+                Span(
+                    id=f"expanded-{record['manager_name'].replace(' ', '_') if record['manager_name'] else ''}",
+                ),
+                id=f"{record['manager_name']}",
+                style="display: grid; grid-template-columns: repeat(10, 1fr);"
+                ) for record in manager_records],
+        style="display: grid; gap: 1rem;"
         )
-    )
+    ), Script(
+            '''
+            function toggleRequestInfo(manager) {
+                let man_tag = "expand-" + manager;
+                let man_var = "expanded-" + manager.replace(/ /g, "_")
+                let classList = document.getElementById(manager).classList;
+                console.log(manager, man_tag, man_var, classList);
+                classList.toggle("show");
+                if (classList.contains('show')) {
+                    document.getElementById(man_tag).innerHTML = "&downarrow; Hide"
+                    document.getElementById(man_var).style.display = "block";
+                } else {
+                    document.getElementById(man_tag).innerHTML = "&rightarrow; Show"
+                    document.getElementById(man_var).style.display = "none";
+                }
+            }
+            '''
+        )
 
 def join_list(lst):
     return ','.join(f"'{l.replace("'", "''")}'" for l in lst)
 
-def filter_managers(data):
+def filter_managers(data, manager=None):
     if 'league_tier' in data:
         league_tiers = join_list(data['league_tier'])
     else:
@@ -1311,6 +1341,8 @@ def filter_managers(data):
     elif competitions:
         filters += f"r.competition IN ({competitions})"
 
+    man_query = f'AND m.manager_name = "{manager}"'
+    
     query  = f'''
         SELECT 
             m.manager_name,
@@ -1330,6 +1362,7 @@ def filter_managers(data):
         WHERE CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) >= {data['min_season']} AND CAST(SUBSTRING(r.season, 1, 4) AS INTEGER) <= {data['max_season']}
             AND r.venue IN ({venues})
             {filters}
+            {f"{man_query if manager else ''}"}
         GROUP BY m.manager_name
         HAVING COUNT(*) >= {min_games}
         ORDER BY P DESC
@@ -1339,8 +1372,10 @@ def filter_managers(data):
         query
     )
     
-    managers = [dict(zip([d[0] for d in managers_cursor.description], row)) for row in managers_cursor.fetchall()]
-    return managers
+    if not manager:
+        return [dict(zip([d[0] for d in managers_cursor.description], row)) for row in managers_cursor.fetchall()]
+    else:
+        return managers_cursor.fetchall()
 
 def get_manager_streaks(data: dict):
     if 'league_tier' in data:
