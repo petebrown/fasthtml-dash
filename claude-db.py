@@ -14,7 +14,25 @@ app, rt = fast_app(
     hdrs = (
         Link(rel="stylesheet", href="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/css/selectize.default.min.css"),
         Script(src="https://code.jquery.com/jquery-3.6.0.min.js"),
-        Script(src="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/js/selectize.min.js")
+        Script(src="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/js/selectize.min.js"),
+        Script(
+            '''
+            function toggleRequestInfo(manager) {
+                let man_tag = "expand-" + manager;
+                let man_var = "expanded-" + manager.replace(/ /g, "_")
+                let classList = document.getElementById(manager).classList;
+                console.log(manager, man_tag, man_var, classList);
+                classList.toggle("show");
+                if (classList.contains('show')) {
+                    document.getElementById(man_tag).innerHTML = "&downarrow; Hide"
+                    document.getElementById(man_var).style.display = "block";
+                } else {
+                    document.getElementById(man_tag).innerHTML = "&rightarrow; Show"
+                    document.getElementById(man_var).style.display = "none";
+                }
+            }
+            '''
+        )
     )
 )
 
@@ -1244,6 +1262,8 @@ def get(manager_name: str):
         H1(f"{manager_name}")
     )
 
+# Refer example here for removing Javascript
+# https://gallery.fastht.ml/split/widgets/show_hide
 
 @rt("/managers-update")
 def post(data: dict):
@@ -1297,24 +1317,7 @@ def post(data: dict):
                 id=f"{record['manager_name']}") for record in manager_records],
         style="display: grid; gap: 1rem;"
         )
-    ), Script(
-            '''
-            function toggleRequestInfo(manager) {
-                let man_tag = "expand-" + manager;
-                let man_var = "expanded-" + manager.replace(/ /g, "_")
-                let classList = document.getElementById(manager).classList;
-                console.log(manager, man_tag, man_var, classList);
-                classList.toggle("show");
-                if (classList.contains('show')) {
-                    document.getElementById(man_tag).innerHTML = "&downarrow; Hide"
-                    document.getElementById(man_var).style.display = "block";
-                } else {
-                    document.getElementById(man_tag).innerHTML = "&rightarrow; Show"
-                    document.getElementById(man_var).style.display = "none";
-                }
-            }
-            '''
-        )
+    )
 
 def join_list(lst):
     return ','.join(f"'{l.replace("'", "''")}'" for l in lst)
