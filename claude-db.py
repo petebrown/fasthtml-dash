@@ -15,24 +15,7 @@ app, rt = fast_app(
         Link(rel="stylesheet", href="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/css/selectize.default.min.css"),
         Script(src="https://code.jquery.com/jquery-3.6.0.min.js"),
         Script(src="https://cdnjs.cloudflare.com/ajax/libs/selectize.js/0.15.2/js/selectize.min.js"),
-        Script(
-            '''
-            function toggleRequestInfo(manager) {
-                let man_tag = "expand-" + manager;
-                let man_var = "expanded-" + manager.replace(/ /g, "_")
-                let classList = document.getElementById(manager).classList;
-                console.log(manager, man_tag, man_var, classList);
-                classList.toggle("show");
-                if (classList.contains('show')) {
-                    document.getElementById(man_tag).innerHTML = "&downarrow; Hide"
-                    document.getElementById(man_var).style.display = "block";
-                } else {
-                    document.getElementById(man_tag).innerHTML = "&rightarrow; Show"
-                    document.getElementById(man_var).style.display = "none";
-                }
-            }
-            '''
-        )
+        Script(src='assets/app.js')
     )
 )
 
@@ -288,6 +271,7 @@ def get(player_id: str, group_by: str = 'overall'):
                     WHEN ? = 'season' THEN strftime('%Y', r.game_date)
                     WHEN ? = 'opposition' THEN r.opposition 
                     WHEN ? = 'competition' THEN r.competition
+                    WHEN ? = 'manager' THEN m.manager_name
                     ELSE 'All' 
                 END as group_by,
                 pa.role,
@@ -295,8 +279,10 @@ def get(player_id: str, group_by: str = 'overall'):
                 r.goals_for,
                 r.goals_against,
                 r.generic_comp
-            FROM player_apps pa
+            FROM player_apps pa      
             JOIN results r ON r.game_date = pa.game_date
+            JOIN manager_reigns mr ON r.game_date BETWEEN mr.mgr_date_from AND COALESCE(mr.mgr_date_to, '9999-12-31')
+            JOIN managers m ON m.manager_id = mr.manager_id
             WHERE pa.player_id = ?
         )
         SELECT 
@@ -328,7 +314,7 @@ def get(player_id: str, group_by: str = 'overall'):
         FROM grouped_data
         GROUP BY group_by
         ORDER BY group_by ASC
-    ''', [group_by, group_by, group_by, player_id])
+    ''', [group_by, group_by, group_by, group_by, player_id])
     
     summaries = [dict(zip([d[0] for d in summary_cursor.description], row)) 
                 for row in summary_cursor.fetchall()]
@@ -417,8 +403,8 @@ def get(request, player_id: str,
     final_query = base_query + ' ORDER BY pa.game_date DESC LIMIT ? OFFSET ?'
     params.extend([per_page, (page - 1) * per_page])
     
-    print("Final Query:", final_query)
-    print("Params:", params)
+    # print("Final Query:", final_query)
+    # print("Params:", params)
     
     appearances_cursor = db.conn.execute(final_query, params)
     appearances = [dict(zip([d[0] for d in appearances_cursor.description], row)) 
@@ -738,6 +724,7 @@ def get(player_id: str, group_by: str = 'overall'):
                 Option("By Season", value="season", selected=group_by=="season"),
                 Option("By Opposition", value="opposition", selected=group_by=="opposition"),
                 Option("By Competition", value="competition", selected=group_by=="competition"),
+                Option("By Manager", value="manager", selected=group_by=="manager"),
                 name="group_by",
                 hx_get=f"/player/{player_id}/summary",  # New endpoint just for summary
                 hx_target="#summary-table",  # Target just the table
@@ -1252,18 +1239,34 @@ def get():
         ),
         Div(
             Div("", id="man_records")
-        )
-    )
+        ),
+    cls='grid')
 
 @rt("/manager-rec/{manager_name}")
-def get(manager_name: str):
+def get(manager_name):
+    print(manager_name)
     return Div(
-        print(manager_name),
-        H1(f"{manager_name}")
-    )
+        H1(f"{manager_name}"),
+    style=f"display: {'grid' if show else 'none'}; gap: 10rem;")
 
 # Refer example here for removing Javascript
 # https://gallery.fastht.ml/split/widgets/show_hide
+
+@rt("/manager-rec/{manager_name}")
+def get(manager_name: str):
+    """Route to fetch manager record details"""
+    # Your existing logic to fetch manager records
+    return f"Details for {manager_name} " * 20  # Replace with your actual manager record fetch logic
+
+def show_hide(subject_id: str, target_route: str):
+    return Span(
+        # "→ Show", id=f"expand-{subject_id}",
+        "+", id=f"expand-{subject_id}",
+        onclick=f"toggleRequestInfo('{subject_id}')",
+        style="cursor: pointer;",
+        hx_get=f"/{target_route}/{subject_id}",
+        hx_target=f"#expanded-{subject_id.replace(' ', '_') if subject_id else ''}"
+    ),
 
 @rt("/managers-update")
 def post(data: dict):
@@ -1298,7 +1301,7 @@ def post(data: dict):
     manager_records = filter_managers(data)
     manager_streaks = get_manager_streaks(data)
 
-    return data, manager_streaks, Card(
+    return Card(
         H2("Overall Records"),
         Div(
             # Header row
@@ -1306,7 +1309,15 @@ def post(data: dict):
                 *[Div(header) for _, header in columns],
                 style="display: grid; grid-template-columns: repeat(10, 1fr); font-weight: bold;"
             ),
-                *[Div(Div(Span("→ Show", id=f"expand-{record['manager_name']}", onclick=f"toggleRequestInfo('{record['manager_name']}')", style="cursor: pointer;", hx_get=f"/manager-rec/{record['manager_name']}", hx_target=f"#expanded-{record['manager_name'].replace(' ', '_') if record['manager_name'] else ''}"),
+                *[Div(Div(
+                    # Span(
+                    #     "→ Show", id=f"expand-{record['manager_name']}",
+                    #     onclick=f"toggleRequestInfo('{record['manager_name']}')",
+                    #     style="cursor: pointer;",
+                    #     hx_get=f"/manager-rec/{record['manager_name']}",
+                    #     hx_target=f"#expanded-{record['manager_name'].replace(' ', '_') if record['manager_name'] else ''}"
+                    # ),
+                    show_hide(record['manager_name'], 'manager-rec'),
                     *[Div(format_cell(record[col], col))
                       for col, _ in columns],
                 style="display: grid; grid-template-columns: repeat(10, 1fr);"
@@ -1419,8 +1430,6 @@ def get_manager_streaks(data: dict):
     # Load base data
     df = pd.read_sql(query, db.conn)
 
-    print(df.columns)
-
     # Basic stats
     stats = df.groupby('manager_name').agg({
         'outcome': ['count',
@@ -1450,4 +1459,3 @@ def get_manager_streaks(data: dict):
     return df
 
 serve()
-
