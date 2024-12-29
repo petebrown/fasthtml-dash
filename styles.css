@@ -1,0 +1,203 @@
+/* styles.css */
+.sort-controls {
+    display: flex;
+    gap: 1rem;
+}
+
+.sort-controls select {
+    flex: 1;
+}
+
+.search-controls form {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 1rem;
+    align-items: start;
+}
+
+.search-controls {
+    margin-bottom: 2rem;
+}
+
+.results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 1.5rem;
+    width: 100%;
+}
+
+.card {
+    border: 1px solid var(--card-border-color);
+    padding: 1.5rem;
+    margin: 0;
+    transition: transform 0.2s;
+    background: var(--card-background-color);
+    height: 100%;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.card-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+}
+
+.card-link:hover {
+    text-decoration: none;
+}
+
+.card-link:hover .card {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.details-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-top: 2rem;
+}
+
+.debut-card {
+    height: fit-content;
+}
+
+.appearances-card {
+    margin-top: 2rem;
+    width: 100%;
+}
+
+.appearances-table {
+    width: 100%;
+    text-align: left;
+    border-collapse: collapse;
+}
+
+.appearances-table th,
+.appearances-table td {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--card-border-color);
+}
+
+.appearances-table thead {
+    border-bottom: 2px solid var(--card-border-color);
+    position: sticky;
+    top: 0;
+    background: var(--card-background-color);
+    z-index: 1;
+}
+
+.appearances-table tr:hover {
+    background: var(--card-hover-color);
+}
+
+.summary-controls {
+    margin-bottom: 1rem;
+}
+
+.summary-table {
+    width: 100%;
+    text-align: left;
+    border-collapse: collapse;
+}
+
+.summary-table th,
+.summary-table td {
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--card-border-color);
+    text-align: center;
+}
+
+.summary-table th:first-child,
+.summary-table td:first-child {
+    text-align: left;
+}
+
+.summary-table thead {
+    border-bottom: 2px solid var(--card-border-color);
+}
+
+.summary-table tr:hover {
+    background: var(--card-hover-color);
+}
+
+.pagination {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.pagination-info {
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.pagination-controls {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+}
+
+.pagination-controls .button {
+    margin: 0;
+}
+
+.page-info {
+    margin: 0 1rem;
+}
+
+.button {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    background: var(--primary);
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+    margin-top: 1rem;
+}
+
+#appearances-content {
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.filter-controls {
+    margin-bottom: 1rem;
+}
+
+.filter-controls form {
+    display: grid;
+    gap: 1rem;
+}
+
+:root {
+    --card-border-color: #ddd;
+    --card-background-color: #fff;
+    --card-hover-color: rgba(0,0,0,0.02);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --card-border-color: #444;
+        --card-background-color: #222;
+        --card-hover-color: rgba(255,255,255,0.02);
+    }
+}
+
+@media (max-width: 640px) {
+    .details-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .appearances-table {
+        display: block;
+        overflow-x: auto;
+    }
+}
