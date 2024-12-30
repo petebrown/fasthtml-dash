@@ -1,5 +1,7 @@
-import pandas as pd
 from fasthtml.common import *
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Literal
+from enum import Enum
 
 db = database("trfc.db")
 
@@ -127,96 +129,173 @@ def filter_generic_comps(min_season, max_season):
 def filter_venues(min_season, max_season):
     return [r['venue'] for r in db.query("SELECT DISTINCT(venue) FROM results r JOIN seasons s ON r.season = s.season WHERE s.ssn_start BETWEEN ? AND ? ORDER BY venue", (min_season, max_season))]
 
-def query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps, pens_as_draw, venues, min_games):
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Literal
+from enum import Enum
+
+class StatType(Enum):
+    OPPOSITION = 'opposition'
+    MANAGER = 'manager'
+
+@dataclass
+class StatsQueryParams:
+    min_season: int
+    max_season: int
+    league_tiers: Optional[List[int]]
+    inc_play_offs: bool
+    generic_comps: Optional[List[str]]
+    pens_as_draw: bool
+    venues: List[str]
+    min_games: int
+    inc_caretakers: Optional[bool] = None  # Only used for manager stats
+    stat_type: StatType = StatType.OPPOSITION
+
+class StatsQueryBuilder:
+    """Builder for generating reusable statistics queries."""
     
-    if inc_play_offs == 0:
-        po_filter = 'AND COALESCE(c.is_playoff, 0) != 1'
-    else:
-        po_filter = ''
+    # Common SQL fragments
+    BASE_CASE_CONDITIONS = """
+        CASE WHEN
+            ({pens_draw} = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = '{outcome}') OR r.outcome = '{match_outcome}'))
+        OR 
+            ({pens_draw} = 1 AND r.outcome = '{match_outcome}')
+        THEN 1 END
+    """
 
-    venue_placeholders = ','.join(['?' for _ in venues])
+    DRAW_CONDITION = """
+        CASE WHEN
+            ({pens_draw} = 0 AND r.outcome = 'D' AND (COALESCE(c.is_pen_shootout, 0) = 0 OR (COALESCE(c.is_pen_shootout, 0) = 1) AND COALESCE(c.is_multi_leg, 0) = 1))
+        OR 
+            ({pens_draw} = 1 AND r.outcome = 'D')
+        THEN 1 END
+    """
 
-    tier_placeholders = ','.join(['?' for _ in league_tiers]) if league_tiers else ''
+    def __init__(self, params: StatsQueryParams):
+        self.params = params
+        self.query_params: List = []
 
-    comp_placeholders = ','.join(['?' for _ in generic_comps]) if generic_comps else ''
+    def build_select(self) -> str:
+        """Build the SELECT clause based on stat type."""
+        group_field = 'm.manager_name' if self.params.stat_type == StatType.MANAGER else 'r.opposition'
+        
+        return f"""
+            SELECT
+                {group_field},
+                COUNT(*) as P,
+                COUNT({self.build_win_condition()}) as W,
+                COUNT({self.build_draw_condition()}) as D,
+                COUNT({self.build_loss_condition()}) as L,
+                SUM(r.goals_for) as GF,
+                SUM(r.goals_against) as GA,
+                SUM(r.goals_for) - SUM(r.goals_against) as GD,
+                ROUND(CAST(COUNT({self.build_win_condition()}) AS FLOAT) / COUNT(*) * 100, 1) as win_pc
+        """
 
-    tier_comp_filter = ''
-    if tier_placeholders or comp_placeholders:
-        filters = []
-        if tier_placeholders:
-            filters.append(f'r.league_tier IN ({tier_placeholders})')
-        if comp_placeholders:
-            filters.append(f'r.generic_comp IN ({comp_placeholders})')
-        tier_comp_filter = 'AND (' + ' OR '.join(filters) + ')'
+    def build_joins(self) -> str:
+        """Build the common JOIN clauses."""
+        return """
+            FROM results r
+            LEFT JOIN cup_game_details c ON r.game_date = c.game_date
+            LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
+                AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
+            LEFT JOIN managers m ON mr.manager_id = m.manager_id
+            LEFT JOIN seasons s ON r.season = s.season
+        """
 
-    query = f'''
-        SELECT
-            r.opposition,
-            COUNT(*) as P,
-            COUNT(
-                CASE WHEN
-                    (? = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = 'W') OR r.outcome = 'W'))
-                OR 
-                    (? = 1 AND r.outcome = 'W')
-                THEN 1 END) as W,
-            COUNT(
-                CASE WHEN
-                    (? = 0 AND r.outcome = 'D' AND (COALESCE(c.is_pen_shootout, 0) = 0 OR (COALESCE(c.is_pen_shootout, 0) = 1) AND COALESCE(c.is_multi_leg, 0) = 1))
-                OR 
-                    (? = 1 AND r.outcome = 'D')
-                THEN 1 END) as D,
-            COUNT(
-                CASE WHEN
-                    (? = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = 'L') OR r.outcome = 'L'))
-                OR 
-                    (? = 1 AND r.outcome = 'L')
-                THEN 1 END) as L,
-            SUM(r.goals_for) as GF,
-            SUM(r.goals_against) as GA,
-            SUM(r.goals_for) - SUM(r.goals_against) as GD,
-            ROUND(CAST(COUNT(
-                CASE WHEN
-                    (? = 0 AND ((COALESCE(c.is_multi_leg, 0) != 1 AND r.outcome = 'D' AND c.pens_outcome = 'W')) OR r.outcome = 'W')
-                OR 
-                    (? = 1 AND r.outcome = 'W')
-                THEN 1 END) AS FLOAT) / COUNT(*) * 100, 1) as win_pc
-        FROM results r
-        LEFT JOIN cup_game_details c ON r.game_date = c.game_date
-        LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
-            AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
-        LEFT JOIN managers m ON mr.manager_id = m.manager_id
-        LEFT JOIN seasons s ON r.season = s.season
-        WHERE s.ssn_start >= ?
-            AND s.ssn_start <= ?
-            AND r.venue IN ({venue_placeholders})
-            {po_filter}
-            {tier_comp_filter}
-        GROUP BY r.opposition
-        HAVING COUNT(*) >= ?
-        ORDER BY P DESC
-    '''
+    def build_win_condition(self) -> str:
+        return self.BASE_CASE_CONDITIONS.format(
+            pens_draw='?',
+            outcome='W',
+            match_outcome='W'
+        )
 
-    params = [
-        pens_as_draw, pens_as_draw, pens_as_draw, pens_as_draw,
-        pens_as_draw, pens_as_draw, pens_as_draw, pens_as_draw,
-        min_season, max_season,
-        *venues
-    ]
+    def build_draw_condition(self) -> str:
+        return self.DRAW_CONDITION.format(pens_draw='?')
 
-    if league_tiers:
-        params.extend(league_tiers)
+    def build_loss_condition(self) -> str:
+        return self.BASE_CASE_CONDITIONS.format(
+            pens_draw='?',
+            outcome='L',
+            match_outcome='L'
+        )
 
-    if generic_comps:
-        params.extend(generic_comps)
+    def build_where_clause(self) -> str:
+        """Build the WHERE clause with all conditions."""
+        conditions = []
+        
+        # Basic date range
+        conditions.append("s.ssn_start >= ? AND s.ssn_start <= ?")
+        self.query_params.extend([self.params.min_season, self.params.max_season])
 
-    params.append(min_games)
+        # Venues
+        venue_placeholders = ','.join(['?' for _ in self.params.venues])
+        conditions.append(f"r.venue IN ({venue_placeholders})")
+        self.query_params.extend(self.params.venues)
 
-    results = db.execute(query, tuple(params)).fetchall()
+        # Play-offs filter
+        if not self.params.inc_play_offs:
+            conditions.append("COALESCE(c.is_playoff, 0) != 1")
 
+        # League tiers and competition types
+        if self.params.league_tiers or self.params.generic_comps:
+            tier_comp_conditions = []
+            if self.params.league_tiers:
+                placeholders = ','.join(['?' for _ in self.params.league_tiers])
+                tier_comp_conditions.append(f'r.league_tier IN ({placeholders})')
+                self.query_params.extend(self.params.league_tiers)
+            if self.params.generic_comps:
+                placeholders = ','.join(['?' for _ in self.params.generic_comps])
+                tier_comp_conditions.append(f'r.generic_comp IN ({placeholders})')
+                self.query_params.extend(self.params.generic_comps)
+            conditions.append('(' + ' OR '.join(tier_comp_conditions) + ')')
+
+        # Caretaker filter for manager stats
+        if self.params.stat_type == StatType.MANAGER and not self.params.inc_caretakers:
+            conditions.append('mr.mgr_role != "Caretaker"')
+
+        return 'WHERE ' + ' AND '.join(conditions)
+
+    def build_group_by(self) -> str:
+        """Build the GROUP BY clause based on stat type."""
+        group_field = 'm.manager_name' if self.params.stat_type == StatType.MANAGER else 'r.opposition'
+        return f"""
+            GROUP BY {group_field}
+            HAVING COUNT(*) >= ?
+            ORDER BY P DESC
+        """
+
+    def build_query(self) -> Tuple[str, List]:
+        """Build the complete query and parameter list."""
+        # Add parameters for the CASE statements
+        case_params = [self.params.pens_as_draw] * 8  # 8 occurrences in the case conditions
+        self.query_params = case_params.copy()
+        
+        query = f"""
+            {self.build_select()}
+            {self.build_joins()}
+            {self.build_where_clause()}
+            {self.build_group_by()}
+        """
+        
+        # Add min_games parameter for HAVING clause
+        self.query_params.append(self.params.min_games)
+        
+        return query, self.query_params
+
+def get_stats_table(params: StatsQueryParams) -> Table:
+    """Generate statistics table based on provided parameters."""
+    builder = StatsQueryBuilder(params)
+    query, query_params = builder.build_query()
+    
+    results = db.execute(query, tuple(query_params)).fetchall()
+    
+    # Column header is either "Opposition" or "Manager" based on stat type
+    header = "Manager" if params.stat_type == StatType.MANAGER else "Opposition"
+    
     return Table(
         Thead(
             Tr(
-                Th("Opposition"),
+                Th(header),
                 Th("P"),
                 Th("W"),
                 Th("D"),
@@ -228,11 +307,43 @@ def query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps
             )
         ),
         Tbody(
-            *[Tr(
-                *[Td(c) for c in columns]
-            ) for columns in results]
+            *[Tr(*[Td(c) for c in columns]) for columns in results]
         )
     )
+
+# Example usage:
+def query_h2h(min_season, max_season, league_tiers, inc_play_offs, 
+              generic_comps, pens_as_draw, venues, min_games):
+    """Generate head-to-head opposition statistics."""
+    params = StatsQueryParams(
+        min_season=min_season,
+        max_season=max_season,
+        league_tiers=league_tiers,
+        inc_play_offs=inc_play_offs,
+        generic_comps=generic_comps,
+        pens_as_draw=pens_as_draw,
+        venues=venues,
+        min_games=min_games,
+        stat_type=StatType.OPPOSITION
+    )
+    return get_stats_table(params)
+
+def query_manager_stats(min_season, max_season, league_tiers, inc_play_offs,
+                       generic_comps, pens_as_draw, venues, min_games, inc_caretakers):
+    """Generate manager statistics."""
+    params = StatsQueryParams(
+        min_season=min_season,
+        max_season=max_season,
+        league_tiers=league_tiers,
+        inc_play_offs=inc_play_offs,
+        generic_comps=generic_comps,
+        pens_as_draw=pens_as_draw,
+        venues=venues,
+        min_games=min_games,
+        inc_caretakers=inc_caretakers,
+        stat_type=StatType.MANAGER
+    )
+    return get_stats_table(params)
 
 @app.post("/h2h-update")
 def process_h2h_inputs(data: dict):
