@@ -155,19 +155,19 @@ def query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps
             COUNT(*) as P,
             COUNT(
                 CASE WHEN
-                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'W')
+                    (? = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = 'W') OR r.outcome = 'W'))
                 OR 
                     (? = 1 AND r.outcome = 'W')
                 THEN 1 END) as W,
             COUNT(
                 CASE WHEN
-                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'D')
+                    (? = 0 AND r.outcome = 'D' AND (COALESCE(c.is_pen_shootout, 0) = 0 OR (COALESCE(c.is_pen_shootout, 0) = 1) AND COALESCE(c.is_multi_leg, 0) = 1))
                 OR 
                     (? = 1 AND r.outcome = 'D')
                 THEN 1 END) as D,
             COUNT(
                 CASE WHEN
-                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'L')
+                    (? = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = 'L') OR r.outcome = 'L'))
                 OR 
                     (? = 1 AND r.outcome = 'L')
                 THEN 1 END) as L,
@@ -176,7 +176,7 @@ def query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps
             SUM(r.goals_for) - SUM(r.goals_against) as GD,
             ROUND(CAST(COUNT(
                 CASE WHEN
-                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'W')
+                    (? = 0 AND ((COALESCE(c.is_multi_leg, 0) != 1 AND r.outcome = 'D' AND c.pens_outcome = 'W')) OR r.outcome = 'W')
                 OR 
                     (? = 1 AND r.outcome = 'W')
                 THEN 1 END) AS FLOAT) / COUNT(*) * 100, 1) as win_pc
