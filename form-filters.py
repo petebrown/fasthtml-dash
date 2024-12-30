@@ -1,3 +1,4 @@
+import pandas as pd
 from fasthtml.common import *
 
 db = database("trfc.db")
@@ -47,7 +48,7 @@ def league_tier_selector(min_season=1921, max_season=2024):
 
 def play_off_selector():
     return Fieldset(
-        Legend(Strong("Include play-off games?")),
+        Legend("Include play-off games?"),
         Label(
             Input(
                 "Include play-off games?",
@@ -66,9 +67,24 @@ def competition_selector(min_season=1921, max_season=2024):
         Legend(Strong('Competitions')),
             *[Label(Input(comp, type='checkbox', value=comp, name='generic_comps', checked=True)) for comp in filter_generic_comps(min_season, max_season)])
 
+def pens_as_draw_selector():
+    return Fieldset(
+        Legend("Treat one-off cup games decided by penalty shoot-out as draws?"),
+        Label(
+            Input(
+                type="checkbox",
+                id="pens_as_draw",
+                name="pens_as_draw",
+                role="switch",
+                checked=True
+            ),
+            For="pens_as_draw"
+        )
+    )
+
 def venue_selector():
     return Fieldset(
-        Legend('Venues'),
+        Legend(Strong('Venues')),
         Label(
             Input(type='checkbox', name='venues', value='H', checked='checked'),
             "Home"
@@ -111,81 +127,148 @@ def filter_generic_comps(min_season, max_season):
 def filter_venues(min_season, max_season):
     return [r['venue'] for r in db.query("SELECT DISTINCT(venue) FROM results r JOIN seasons s ON r.season = s.season WHERE s.ssn_start BETWEEN ? AND ? ORDER BY venue", (min_season, max_season))]
 
-def query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps, venues, min_games):
-    league_tier_filter = f"AND r.league_tier IN ({', '.join([str(tier) for tier in league_tiers])})" if league_tiers else ""
+def query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps, pens_as_draw, venues, min_games):
     
-    po_filter = "AND c.is_playoff != 1" if not inc_play_offs else ""
+    if inc_play_offs == 0:
+        po_filter = 'AND COALESCE(c.is_playoff, 0) != 1'
+    else:
+        po_filter = ''
 
-    generic_comp_filter = f"AND r.generic_comp IN ({', '.join([str(comp) for comp in generic_comps])})" if generic_comps else ""
+    venue_placeholders = ','.join(['?' for _ in venues])
 
-    print(f"""
-        SELECT 
+    tier_placeholders = ','.join(['?' for _ in league_tiers]) if league_tiers else ''
+
+    comp_placeholders = ','.join(['?' for _ in generic_comps]) if generic_comps else ''
+
+    tier_comp_filter = ''
+    if tier_placeholders or comp_placeholders:
+        filters = []
+        if tier_placeholders:
+            filters.append(f'r.league_tier IN ({tier_placeholders})')
+        if comp_placeholders:
+            filters.append(f'r.generic_comp IN ({comp_placeholders})')
+        tier_comp_filter = 'AND (' + ' OR '.join(filters) + ')'
+
+    query = f'''
+        SELECT
             r.opposition,
-            COUNT(*) AS P,
-            SUM(CASE WHEN r.outcome = 'W' THEN 1 ELSE 0 END) AS W,
-            SUM(CASE WHEN r.outcome = 'D' THEN 1 ELSE 0 END) AS D,
-            SUM(CASE WHEN r.outcome = 'L' THEN 1 ELSE 0 END) AS L,
-            SUM(r.goals_for) AS GF,
-            SUM(r.goals_against) AS GA,
-            SUM(r.goals_for) - SUM(r.goals_against) AS GD,
-            SUM(CASE WHEN r.outcome = 'W' THEN 1 ELSE 0 END) / COUNT(*) AS WIN_PC
+            COUNT(*) as P,
+            COUNT(
+                CASE WHEN
+                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'W')
+                OR 
+                    (? = 1 AND r.outcome = 'W')
+                THEN 1 END) as W,
+            COUNT(
+                CASE WHEN
+                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'D')
+                OR 
+                    (? = 1 AND r.outcome = 'D')
+                THEN 1 END) as D,
+            COUNT(
+                CASE WHEN
+                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'L')
+                OR 
+                    (? = 1 AND r.outcome = 'L')
+                THEN 1 END) as L,
+            SUM(r.goals_for) as GF,
+            SUM(r.goals_against) as GA,
+            SUM(r.goals_for) - SUM(r.goals_against) as GD,
+            ROUND(CAST(COUNT(
+                CASE WHEN
+                    (? = 0 AND COALESCE(c.pens_outcome, r.outcome) = 'W')
+                OR 
+                    (? = 1 AND r.outcome = 'W')
+                THEN 1 END) AS FLOAT) / COUNT(*) * 100, 1) as win_pc
         FROM results r
-            JOIN seasons s ON r.season = s.season
-            LEFT JOIN cup_game_details c ON r.game_date = c.game_date
-        WHERE s.ssn_start BETWEEN {min_season} AND {max_season}
-            {league_tier_filter}
+        LEFT JOIN cup_game_details c ON r.game_date = c.game_date
+        LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
+            AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
+        LEFT JOIN managers m ON mr.manager_id = m.manager_id
+        LEFT JOIN seasons s ON r.season = s.season
+        WHERE s.ssn_start >= ?
+            AND s.ssn_start <= ?
+            AND r.venue IN ({venue_placeholders})
             {po_filter}
-            {generic_comp_filter}
+            {tier_comp_filter}
         GROUP BY r.opposition
-    """)
+        HAVING COUNT(*) >= ?
+        ORDER BY P DESC
+    '''
 
-    return db.query(f"""
-        SELECT 
-            r.opposition,
-            COUNT(*) AS P,
-            SUM(CASE WHEN r.outcome = 'W' THEN 1 ELSE 0 END) AS W,
-            SUM(CASE WHEN r.outcome = 'D' THEN 1 ELSE 0 END) AS D,
-            SUM(CASE WHEN r.outcome = 'L' THEN 1 ELSE 0 END) AS L,
-            SUM(r.goals_for) AS GF,
-            SUM(r.goals_against) AS GA,
-            SUM(r.goals_for) - SUM(r.goals_against) AS GD,
-            SUM(CASE WHEN r.outcome = 'W' THEN 1 ELSE 0 END) / COUNT(*) AS WIN_PC
-        FROM results r
-            JOIN seasons s ON r.season = s.season
-            LEFT JOIN cup_game_details c ON r.game_date = c.game_date
-        WHERE s.ssn_start BETWEEN {min_season} AND {max_season}
-            {league_tier_filter}
-            {po_filter}
-            {generic_comp_filter}
-        GROUP BY r.opposition
-    """)
+    params = [
+        pens_as_draw, pens_as_draw, pens_as_draw, pens_as_draw,
+        pens_as_draw, pens_as_draw, pens_as_draw, pens_as_draw,
+        min_season, max_season,
+        *venues
+    ]
+
+    if league_tiers:
+        params.extend(league_tiers)
+
+    if generic_comps:
+        params.extend(generic_comps)
+
+    params.append(min_games)
+
+    results = db.execute(query, tuple(params)).fetchall()
+
+    return Table(
+        Thead(
+            Tr(
+                Th("Opposition"),
+                Th("P"),
+                Th("W"),
+                Th("D"),
+                Th("L"),
+                Th("GF"),
+                Th("GA"),
+                Th("GD"),
+                Th("Win %")
+            )
+        ),
+        Tbody(
+            *[Tr(
+                *[Td(c) for c in columns]
+            ) for columns in results]
+        )
+    )
 
 @app.post("/h2h-update")
 def process_h2h_inputs(data: dict):
     min_season = data['min_season']
     max_season = data['max_season']
+    
     if 'league_tiers' in data:
         league_tiers = data['league_tiers']
     else:
         league_tiers = False
         
     if 'inc_play_offs' in data:
-        inc_play_offs = True
+        inc_play_offs = 1
     else:
-        inc_play_offs = False
+        inc_play_offs = 0
 
     if 'generic_comps' in data:
         generic_comps = data['generic_comps']
     else:
         generic_comps = False
+
+    if 'pens_as_draw' in data:
+        pens_as_draws = 1
+    else:
+        pens_as_draws = 0
+
+    min_games = int(data['min_games'])
     
     return Div(
         *[Div(f"{k}: {v}") for k, v in data.items()],
         Div(f"League tiers: {filter_league_tiers(min_season, max_season)}"),
-        Div(f"Competitions: {filter_generic_comps(min_season, max_season)}"),
         Div(f"Play-offs: {filter_play_offs(min_season, max_season)}"),
+        Div(f"Competitions: {filter_generic_comps(min_season, max_season)}"),
+        
         Div(f"Venues: {filter_venues(min_season, max_season)}"),
-        Div(query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps, data['venues'], data['min_games']))
+        Div(query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps, pens_as_draws, data['venues'], min_games))
     )
 
 @app.get("/")
@@ -202,6 +285,7 @@ def index():
             play_off_selector(),
             Hr(),
             competition_selector(),
+            pens_as_draw_selector(),
             Hr(),
             venue_selector(),
             Hr(),
