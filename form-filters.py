@@ -85,20 +85,10 @@ def pens_as_draw_selector():
     )
 
 def venue_selector():
+    venues = ['Home', 'Away', 'Neutral']
     return Fieldset(
         Legend(Strong('Venues')),
-        Label(
-            Input(type='checkbox', name='venues', value='H', checked='checked'),
-            "Home"
-        ),
-        Label(
-            Input(type='checkbox', name='venues', value='A', checked='checked'),
-            "Away"
-        ),
-        Label(
-            Input(type='checkbox', name='venues', value='N', checked='checked'),
-            "Neutral"
-        )
+        *[Label(Input(type='checkbox', name='venues', value=venue[0], checked='checked'), venue) for venue in venues]
     )
 
 def min_game_selector(page, min_no=1):
@@ -129,13 +119,10 @@ def filter_generic_comps(min_season, max_season):
 def filter_venues(min_season, max_season):
     return [r['venue'] for r in db.query("SELECT DISTINCT(venue) FROM results r JOIN seasons s ON r.season = s.season WHERE s.ssn_start BETWEEN ? AND ? ORDER BY venue", (min_season, max_season))]
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple, Literal
-from enum import Enum
-
 class StatType(Enum):
     OPPOSITION = 'opposition'
     MANAGER = 'manager'
+    PLAYER = 'player'
 
 @dataclass
 class StatsQueryParams:
@@ -148,12 +135,15 @@ class StatsQueryParams:
     venues: List[str]
     min_games: int
     inc_caretakers: Optional[bool] = None  # Only used for manager stats
+    inc_sub_apps: Optional[bool] = None  # Only used for player stats
     stat_type: StatType = StatType.OPPOSITION
 
 class StatsQueryBuilder:
     """Builder for generating reusable statistics queries."""
     
     # Common SQL fragments
+    # CASE conditions for win/loss based on whether penalties are treated as draws
+    # When user opts NOT to treat one-off cup games decided by penalties as draws, a win/loss is recorded if (1) a penalty shoot-out was used to decide a non-multi-leg game that was drawn, or (2) the game was recorded as a W/L (outcome) and therefore penalties were not involved
     BASE_CASE_CONDITIONS = """
         CASE WHEN
             ({pens_draw} = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = '{outcome}') OR r.outcome = '{match_outcome}'))
@@ -162,6 +152,7 @@ class StatsQueryBuilder:
         THEN 1 END
     """
 
+    # When user opts NOT to treat one-off cup games decided by penalties as draws, a draw is only recorded if (1) the game finished in a draw and a penalty shoot-out was not used to decide a game, OR (2) the game finished in a draw and a penalty shoot-out was used to decide a multi-leg game
     DRAW_CONDITION = """
         CASE WHEN
             ({pens_draw} = 0 AND r.outcome = 'D' AND (COALESCE(c.is_pen_shootout, 0) = 0 OR (COALESCE(c.is_pen_shootout, 0) = 1) AND COALESCE(c.is_multi_leg, 0) = 1))
