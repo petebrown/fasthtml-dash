@@ -2,6 +2,7 @@ from fasthtml.common import *
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Literal
 from enum import Enum
+import pandas as pd
 
 db = database("trfc.db")
 
@@ -11,13 +12,15 @@ app, rt = fast_app(
 )
 
 def season_selector(type):
+    min_ssn = min(season_list())[:4]
+    max_ssn = max(season_list())[:4]
     if type == 'min':
         name = 'min_season'
-        default_ssn = 1921
+        default_ssn = min_ssn
     else:
         name = 'max_season'
-        default_ssn = 2024
-    return Input(type="range", name=f"{name}", min=1921, max=2024, value=f"{default_ssn}")
+        default_ssn = max_ssn
+    return Input(type="range", name=f"{name}", min=min_ssn, max=max_ssn, value=f"{default_ssn}")
 
 def league_tier_selector(min_season=1921, max_season=2024):
     valid_tiers = filter_league_tiers(min_season, max_season)
@@ -44,7 +47,7 @@ def league_tier_selector(min_season=1921, max_season=2024):
     ]
     
     return Fieldset(
-        Legend('League Tiers'),
+        Legend(Strong('League Tiers')),
         *labels
     )
 
@@ -141,8 +144,7 @@ class StatsQueryParams:
 class StatsQueryBuilder:
     """Builder for generating reusable statistics queries."""
     
-    # Common SQL fragments
-    # CASE conditions for win/loss based on whether penalties are treated as draws
+    # BASE_CASE_CONDITIONS: CASE conditions for win/loss based on whether penalties are treated as draws
     # When user opts NOT to treat one-off cup games decided by penalties as draws, a win/loss is recorded if (1) a penalty shoot-out was used to decide a non-multi-leg game that was drawn, or (2) the game was recorded as a W/L (outcome) and therefore penalties were not involved
     BASE_CASE_CONDITIONS = """
         CASE WHEN
@@ -302,7 +304,7 @@ def get_stats_table(params: StatsQueryParams) -> Table:
         )
     )
 
-# Example usage:
+
 def query_h2h(min_season, max_season, league_tiers, inc_play_offs, 
               generic_comps, pens_as_draw, venues, min_games):
     """Generate head-to-head opposition statistics."""
@@ -364,20 +366,266 @@ def process_h2h_inputs(data: dict):
     min_games = int(data['min_games'])
     
     return Div(
-        *[Div(f"{k}: {v}") for k, v in data.items()],
-        Div(f"League tiers: {filter_league_tiers(min_season, max_season)}"),
-        Div(f"Play-offs: {filter_play_offs(min_season, max_season)}"),
-        Div(f"Competitions: {filter_generic_comps(min_season, max_season)}"),
-        
-        Div(f"Venues: {filter_venues(min_season, max_season)}"),
+        # *[Div(f"{k}: {v}") for k, v in data.items()],
+        # Div(f"League tiers: {filter_league_tiers(min_season, max_season)}"),
+        # Div(f"Play-offs: {filter_play_offs(min_season, max_season)}"),
+        # Div(f"Competitions: {filter_generic_comps(min_season, max_season)}"),
+        # Div(f"Venues: {filter_venues(min_season, max_season)}"),
         Div(query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps, pens_as_draws, data['venues'], min_games))
     )
+
+class StreakQueryBuilder:
+    """Extension of StatsQueryBuilder to handle streak calculations"""
+    
+    def __init__(self, params: StatsQueryParams):
+        self.params = params
+        self.query_params: List = []
+
+    def build_select(self) -> str:
+        """Build SELECT clause for streak data"""
+        select_field = {
+            StatType.OPPOSITION: 'r.opposition',
+            StatType.MANAGER: 'm.manager_name',
+            StatType.PLAYER: 'p.player_name'
+        }[self.params.stat_type]
+        
+        return f"""
+            SELECT 
+                {select_field},
+                r.game_date,
+                r.outcome,
+                r.goals_for,
+                r.goals_against,
+                c.is_pen_shootout,
+                c.pens_outcome,
+                c.is_multi_leg
+        """
+
+    def build_joins(self) -> str:
+        """Build JOIN clauses"""
+        joins = """
+            FROM results r
+            LEFT JOIN cup_game_details c ON r.game_date = c.game_date
+            LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
+                AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
+            LEFT JOIN managers m ON mr.manager_id = m.manager_id
+            LEFT JOIN seasons s ON r.season = s.season
+        """
+        
+        if self.params.stat_type == StatType.PLAYER:
+            joins += """
+                LEFT JOIN player_apps pa ON r.game_date = pa.game_date
+                LEFT JOIN players p ON pa.player_id = p.player_id
+            """
+            
+        return joins
+
+    def build_where_clause(self) -> str:
+        """Build WHERE clause with conditions"""
+        conditions = []
+        
+        # Base conditions
+        conditions.append("s.ssn_start >= ? AND s.ssn_start <= ?")
+        self.query_params.extend([self.params.min_season, self.params.max_season])
+
+        # Venue filter
+        venue_placeholders = ','.join(['?' for _ in self.params.venues])
+        conditions.append(f"r.venue IN ({venue_placeholders})")
+        self.query_params.extend(self.params.venues)
+
+        # Play-off filter
+        if not self.params.inc_play_offs:
+            conditions.append("COALESCE(c.is_playoff, 0) != 1")
+
+        # League tiers and competitions
+        if self.params.league_tiers or self.params.generic_comps:
+            tier_comp_conditions = []
+            if self.params.league_tiers:
+                placeholders = ','.join(['?' for _ in self.params.league_tiers])
+                tier_comp_conditions.append(f'r.league_tier IN ({placeholders})')
+                self.query_params.extend(self.params.league_tiers)
+            if self.params.generic_comps:
+                placeholders = ','.join(['?' for _ in self.params.generic_comps])
+                tier_comp_conditions.append(f'r.generic_comp IN ({placeholders})')
+                self.query_params.extend(self.params.generic_comps)
+            conditions.append('(' + ' OR '.join(tier_comp_conditions) + ')')
+
+        # Type-specific conditions
+        if self.params.stat_type == StatType.MANAGER and not self.params.inc_caretakers:
+            conditions.append('mr.mgr_role != "Caretaker"')
+        elif self.params.stat_type == StatType.PLAYER:
+            if not self.params.inc_sub_apps:
+                conditions.append("pa.role = 'starter'")
+
+        return 'WHERE ' + ' AND '.join(conditions)
+
+    def build_order_by(self) -> str:
+        """Build ORDER BY clause"""
+        group_field = {
+            StatType.OPPOSITION: 'r.opposition',
+            StatType.MANAGER: 'm.manager_name',
+            StatType.PLAYER: 'p.player_name'
+        }[self.params.stat_type]
+        
+        return f"ORDER BY {group_field}, r.game_date"
+
+    def build_query(self) -> tuple[str, List]:
+        """Build complete query and parameter list"""
+        query = f"""
+            {self.build_select()}
+            {self.build_joins()}
+            {self.build_where_clause()}
+            {self.build_order_by()}
+        """
+        
+        return query, self.query_params
+
+def prepare_streaks_df(df: pd.DataFrame, pens_as_draw: bool = True) -> pd.DataFrame:
+    """Prepare DataFrame with streak indicators"""
+    
+    def get_outcome(row):
+        if pens_as_draw:
+            return row['outcome']
+        else:
+            if (row['outcome'] == 'D' and 
+                row['is_pen_shootout'] == 1 and 
+                row['is_multi_leg'] == 0):
+                return row['pens_outcome']
+            return row['outcome']
+    
+    df['adjusted_outcome'] = df.apply(get_outcome, axis=1)
+    
+    df['is_win'] = df['adjusted_outcome'] == 'W'
+    df['is_unbeaten'] = df['adjusted_outcome'] != 'L'
+    df['is_clean_sheet'] = df['goals_against'] == 0
+    df['is_draw'] = df['adjusted_outcome'] == 'D'
+    df['is_winless'] = df['adjusted_outcome'] != 'W'
+    df['is_loss'] = df['adjusted_outcome'] == 'L'
+    df['is_win_to_nil'] = (df['adjusted_outcome'] == 'W') & (df['goals_against'] == 0)
+    df['is_loss_to_nil'] = (df['adjusted_outcome'] == 'L') & (df['goals_for'] == 0)
+    
+    return df
+
+def get_streak_lengths(group: pd.Series) -> pd.Series:
+    """Calculate streak lengths for a group"""
+    streak_groups = (group != group.shift()).cumsum()
+    return group.groupby(streak_groups).sum()
+
+def calc_streaks(df: pd.DataFrame, focus: str, condition: str) -> pd.Series:
+    """Calculate maximum streak length for a condition"""
+    return df.groupby(focus)[condition].apply(
+        lambda x: get_streak_lengths(x).max()
+    )
+
+def get_streaks_df(df: pd.DataFrame, focus: str, params: StatsQueryParams) -> pd.DataFrame:
+    """Generate DataFrame with streak statistics"""
+    df = prepare_streaks_df(df, params.pens_as_draw)
+    
+    index_name = {
+        'manager_name': 'Manager',
+        'player_name': 'Player',
+        'opposition': 'Opposition',
+        'season': 'Season'
+    }[focus]
+    
+    return pd.DataFrame({
+        'Wins': calc_streaks(df, focus, 'is_win'),
+        'Unbeaten': calc_streaks(df, focus, 'is_unbeaten'),
+        'Clean Sheets': calc_streaks(df, focus, 'is_clean_sheet'),
+        'Wins to nil': calc_streaks(df, focus, 'is_win_to_nil'),
+        'Draws': calc_streaks(df, focus, 'is_draw'),
+        'Winless': calc_streaks(df, focus, 'is_winless'),
+        'Defeats': calc_streaks(df, focus, 'is_loss'),
+        'Losses to nil': calc_streaks(df, focus, 'is_loss_to_nil')
+    }).reset_index().rename(columns={focus: index_name})
+
+def get_streaks_table(params: StatsQueryParams) -> Table:
+    """Generate streak statistics table based on provided parameters"""
+    # Build and execute query
+    builder = StreakQueryBuilder(params)
+    query, query_params = builder.build_query()
+    
+    # Convert to DataFrame
+    df = pd.read_sql(query, db.conn, params=query_params)
+    
+    # Get focus field based on stat type
+    focus = {
+        StatType.OPPOSITION: 'opposition',
+        StatType.MANAGER: 'manager_name',
+        StatType.PLAYER: 'player_name'
+    }[params.stat_type]
+    
+    # Calculate streaks
+    streaks_df = get_streaks_df(df, focus, params)
+    
+    # Filter by minimum games if specified
+    if params.min_games > 0:
+        games_per_entity = df.groupby(focus).size()
+        valid_entities = games_per_entity[games_per_entity >= params.min_games].index
+        streaks_df = streaks_df[streaks_df[streaks_df.columns[0]].isin(valid_entities)]
+    
+    # Convert to FastHTML Table
+    return Table(
+        Thead(
+            Tr(*[Th(col) for col in streaks_df.columns])
+        ),
+        Tbody(
+            *[Tr(*[Td(val) for val in row]) for row in streaks_df.values]
+        )
+    )
+
+@app.post("/streaks-update")
+def process_streaks_inputs(data: dict):
+    """Process form inputs and return streak analysis"""
+    min_season = int(data['min_season'])
+    max_season = int(data['max_season'])
+    
+    league_tiers = data.get('league_tiers', [])
+    inc_play_offs = 'inc_play_offs' in data
+    generic_comps = data.get('generic_comps', [])
+    pens_as_draw = 'pens_as_draw' in data
+    venues = data.get('venues', [])
+    min_games = int(data.get('min_games', 0))
+    
+    # Create stats parameters
+    params = StatsQueryParams(
+        min_season=min_season,
+        max_season=max_season,
+        league_tiers=league_tiers,
+        inc_play_offs=inc_play_offs,
+        generic_comps=generic_comps,
+        pens_as_draw=pens_as_draw,
+        venues=venues,
+        min_games=min_games,
+        stat_type=StatType.OPPOSITION  # Can be parameterized based on UI selection
+    )
+    
+    return Div(
+        get_streaks_table(params)
+    )
+
+@app.post("/h2h-records")
+def return_h2h_records(data: dict):
+    h2h_tab = process_h2h_inputs(data)
+    streaks_tab = process_streaks_inputs(data)
+
+    return Div(
+        Card(
+            H1('Head-to-Head Records'),
+            h2h_tab
+        ),
+        Card(
+            H1('Streak Analysis'),
+            streaks_tab
+        )
+    )
+
 
 @app.get("/")
 def index():
     return Grid(
         Form(
-            H6('Season range'),
+            Strong('Season range'),
             Div(
                 season_selector('min'),
                 season_selector('max')
@@ -392,14 +640,13 @@ def index():
             venue_selector(),
             Hr(),
             min_game_selector('h2h'),
-        # Routing for form submission
-        id="h2h-options",
-        hx_trigger="input",
-        hx_post="/h2h-update",
-        hx_target="#h2h_records",
-        hx_swap="innerHTML"
-        ), 
-        Div(id="h2h_records")
+            id="streak-options",
+            hx_trigger="input",
+            hx_post="/h2h-records",
+            hx_target="#h2h-output",
+            hx_swap="innerHTML"
+        ),
+        Div(id="h2h-output")
     )
 
 serve()
