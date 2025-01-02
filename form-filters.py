@@ -11,6 +11,9 @@ app, rt = fast_app(
     hdrs = ()
 )
 
+def season_list():
+    return [s['season'] for s in db.query("SELECT season FROM seasons ORDER BY season DESC")]
+
 def season_selector(type):
     min_ssn = min(season_list())[:4]
     max_ssn = max(season_list())[:4]
@@ -53,7 +56,6 @@ def league_tier_selector(min_season=1921, max_season=2024):
 
 def play_off_selector():
     return Fieldset(
-        Legend("Include play-off games?"),
         Label(
             Input(
                 "Include play-off games?",
@@ -74,9 +76,9 @@ def competition_selector(min_season=1921, max_season=2024):
 
 def pens_as_draw_selector():
     return Fieldset(
-        Legend("Treat one-off cup games decided by penalty shoot-out as draws?"),
         Label(
             Input(
+                "Treat one-off cup games decided by penalty shoot-out as draws?",
                 type="checkbox",
                 id="pens_as_draw",
                 name="pens_as_draw",
@@ -106,9 +108,6 @@ def min_game_selector(page, min_no=1):
         f'Minimum number of {label_text}:',
         Input(type="range", name="min_games", min={min_no}, max=100, value=10)
     )
-
-def season_list():
-    return [s['season'] for s in db.query("SELECT season FROM seasons ORDER BY season DESC")]
 
 def filter_league_tiers(min_season, max_season):
     return [s['ssn_league_tier'] for s in db.query("SELECT DISTINCT(ssn_league_tier) FROM seasons s WHERE s.ssn_start BETWEEN ? AND ? ORDER BY ssn_league_tier", (min_season, max_season))]
@@ -141,52 +140,16 @@ class StatsQueryParams:
     inc_sub_apps: Optional[bool] = None  # Only used for player stats
     stat_type: StatType = StatType.OPPOSITION
 
-class StatsQueryBuilder:
-    """Builder for generating reusable statistics queries."""
+class BaseQueryBuilder:
+    """Base class for building football statistics queries"""
     
-    # BASE_CASE_CONDITIONS: CASE conditions for win/loss based on whether penalties are treated as draws
-    # When user opts NOT to treat one-off cup games decided by penalties as draws, a win/loss is recorded if (1) a penalty shoot-out was used to decide a non-multi-leg game that was drawn, or (2) the game was recorded as a W/L (outcome) and therefore penalties were not involved
-    BASE_CASE_CONDITIONS = """
-        CASE WHEN
-            ({pens_draw} = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = '{outcome}') OR r.outcome = '{match_outcome}'))
-        OR 
-            ({pens_draw} = 1 AND r.outcome = '{match_outcome}')
-        THEN 1 END
-    """
-
-    # When user opts NOT to treat one-off cup games decided by penalties as draws, a draw is only recorded if (1) the game finished in a draw and a penalty shoot-out was not used to decide a game, OR (2) the game finished in a draw and a penalty shoot-out was used to decide a multi-leg game
-    DRAW_CONDITION = """
-        CASE WHEN
-            ({pens_draw} = 0 AND r.outcome = 'D' AND (COALESCE(c.is_pen_shootout, 0) = 0 OR (COALESCE(c.is_pen_shootout, 0) = 1) AND COALESCE(c.is_multi_leg, 0) = 1))
-        OR 
-            ({pens_draw} = 1 AND r.outcome = 'D')
-        THEN 1 END
-    """
-
     def __init__(self, params: StatsQueryParams):
         self.params = params
         self.query_params: List = []
 
-    def build_select(self) -> str:
-        """Build the SELECT clause based on stat type."""
-        group_field = 'm.manager_name' if self.params.stat_type == StatType.MANAGER else 'r.opposition'
-        
-        return f"""
-            SELECT
-                {group_field},
-                COUNT(*) as P,
-                COUNT({self.build_win_condition()}) as W,
-                COUNT({self.build_draw_condition()}) as D,
-                COUNT({self.build_loss_condition()}) as L,
-                SUM(r.goals_for) as GF,
-                SUM(r.goals_against) as GA,
-                SUM(r.goals_for) - SUM(r.goals_against) as GD,
-                ROUND(CAST(COUNT({self.build_win_condition()}) AS FLOAT) / COUNT(*) * 100, 1) as win_pc
-        """
-
-    def build_joins(self) -> str:
-        """Build the common JOIN clauses."""
-        return """
+    def build_base_joins(self) -> str:
+        """Common JOIN clauses used across query types"""
+        base_joins = """
             FROM results r
             LEFT JOIN cup_game_details c ON r.game_date = c.game_date
             LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
@@ -195,25 +158,16 @@ class StatsQueryBuilder:
             LEFT JOIN seasons s ON r.season = s.season
         """
 
-    def build_win_condition(self) -> str:
-        return self.BASE_CASE_CONDITIONS.format(
-            pens_draw='?',
-            outcome='W',
-            match_outcome='W'
-        )
+        if self.params.stat_type == StatType.PLAYER:
+            base_joins += """
+                LEFT JOIN player_apps pa ON r.game_date = pa.game_date
+                LEFT JOIN players p ON pa.player_id = p.player_id
+            """
 
-    def build_draw_condition(self) -> str:
-        return self.DRAW_CONDITION.format(pens_draw='?')
-
-    def build_loss_condition(self) -> str:
-        return self.BASE_CASE_CONDITIONS.format(
-            pens_draw='?',
-            outcome='L',
-            match_outcome='L'
-        )
+        return base_joins
 
     def build_where_clause(self) -> str:
-        """Build the WHERE clause with all conditions."""
+        """Common WHERE conditions across query types"""
         conditions = []
         
         # Basic date range
@@ -242,15 +196,79 @@ class StatsQueryBuilder:
                 self.query_params.extend(self.params.generic_comps)
             conditions.append('(' + ' OR '.join(tier_comp_conditions) + ')')
 
-        # Caretaker filter for manager stats
+        # Type-specific conditions
         if self.params.stat_type == StatType.MANAGER and not self.params.inc_caretakers:
             conditions.append('mr.mgr_role != "Caretaker"')
+        elif self.params.stat_type == StatType.PLAYER:
+            if not self.params.inc_sub_apps:
+                conditions.append("pa.role = 'starter'")
 
         return 'WHERE ' + ' AND '.join(conditions)
 
+    def get_group_field(self) -> str:
+        """Get the appropriate grouping field based on stat type"""
+        return {
+            StatType.OPPOSITION: 'r.opposition',
+            StatType.MANAGER: 'm.manager_name',
+            StatType.PLAYER: 'p.player_name'
+        }[self.params.stat_type]
+
+class StatsQueryBuilder(BaseQueryBuilder):
+    """Builder for aggregated statistics queries"""
+    
+    BASE_CASE_CONDITIONS = """
+        CASE WHEN
+            ({pens_draw} = 0 AND ((COALESCE(c.is_multi_leg, 0) = 0 AND r.outcome = 'D' AND c.pens_outcome = '{outcome}') OR r.outcome = '{match_outcome}'))
+        OR 
+            ({pens_draw} = 1 AND r.outcome = '{match_outcome}')
+        THEN 1 END
+    """
+
+    DRAW_CONDITION = """
+        CASE WHEN
+            ({pens_draw} = 0 AND r.outcome = 'D' AND (COALESCE(c.is_pen_shootout, 0) = 0 OR (COALESCE(c.is_pen_shootout, 0) = 1) AND COALESCE(c.is_multi_leg, 0) = 1))
+        OR 
+            ({pens_draw} = 1 AND r.outcome = 'D')
+        THEN 1 END
+    """
+
+    def build_select(self) -> str:
+        """Build aggregated statistics SELECT clause"""
+        group_field = self.get_group_field()
+        
+        return f"""
+            SELECT
+                {group_field},
+                COUNT(*) as P,
+                COUNT({self.build_win_condition()}) as W,
+                COUNT({self.build_draw_condition()}) as D,
+                COUNT({self.build_loss_condition()}) as L,
+                SUM(r.goals_for) as GF,
+                SUM(r.goals_against) as GA,
+                SUM(r.goals_for) - SUM(r.goals_against) as GD,
+                ROUND(CAST(COUNT({self.build_win_condition()}) AS FLOAT) / COUNT(*) * 100, 1) as win_pc
+        """
+
+    def build_win_condition(self) -> str:
+        return self.BASE_CASE_CONDITIONS.format(
+            pens_draw='?',
+            outcome='W',
+            match_outcome='W'
+        )
+
+    def build_draw_condition(self) -> str:
+        return self.DRAW_CONDITION.format(pens_draw='?')
+
+    def build_loss_condition(self) -> str:
+        return self.BASE_CASE_CONDITIONS.format(
+            pens_draw='?',
+            outcome='L',
+            match_outcome='L'
+        )
+
     def build_group_by(self) -> str:
-        """Build the GROUP BY clause based on stat type."""
-        group_field = 'm.manager_name' if self.params.stat_type == StatType.MANAGER else 'r.opposition'
+        """Build GROUP BY clause for aggregated statistics"""
+        group_field = self.get_group_field()
         return f"""
             GROUP BY {group_field}
             HAVING COUNT(*) >= ?
@@ -258,20 +276,65 @@ class StatsQueryBuilder:
         """
 
     def build_query(self) -> Tuple[str, List]:
-        """Build the complete query and parameter list."""
+        """Build complete aggregated statistics query"""
         # Add parameters for the CASE statements
-        case_params = [self.params.pens_as_draw] * 8  # 8 occurrences in the case conditions
+        case_params = [self.params.pens_as_draw] * 8
         self.query_params = case_params.copy()
         
         query = f"""
             {self.build_select()}
-            {self.build_joins()}
+            {self.build_base_joins()}
             {self.build_where_clause()}
             {self.build_group_by()}
         """
         
-        # Add min_games parameter for HAVING clause
         self.query_params.append(self.params.min_games)
+        return query, self.query_params
+
+class StreakQueryBuilder(BaseQueryBuilder):
+    """Builder for streak analysis queries"""
+
+    def build_select(self) -> str:
+        """Build raw game data SELECT clause for streak analysis"""
+        select_field = self.get_group_field()
+        
+        return f"""
+            SELECT 
+                {select_field},
+                r.game_date,
+                r.outcome,
+                r.goals_for,
+                r.goals_against,
+                c.is_pen_shootout,
+                c.pens_outcome,
+                c.is_multi_leg
+        """
+
+    def build_joins(self) -> str:
+        """Build JOINs including player-specific joins if needed"""
+        joins = self.build_base_joins()
+        
+        if self.params.stat_type == StatType.PLAYER:
+            joins += """
+                LEFT JOIN player_apps pa ON r.game_date = pa.game_date
+                LEFT JOIN players p ON pa.player_id = p.player_id
+            """
+            
+        return joins
+
+    def build_order_by(self) -> str:
+        """Build ORDER BY clause for streak analysis"""
+        group_field = self.get_group_field()
+        return f"ORDER BY {group_field}, r.game_date"
+
+    def build_query(self) -> Tuple[str, List]:
+        """Build complete streak analysis query"""
+        query = f"""
+            {self.build_select()}
+            {self.build_joins()}
+            {self.build_where_clause()}
+            {self.build_order_by()}
+        """
         
         return query, self.query_params
 
@@ -374,111 +437,6 @@ def process_h2h_inputs(data: dict):
         Div(query_h2h(min_season, max_season, league_tiers, inc_play_offs, generic_comps, pens_as_draws, data['venues'], min_games))
     )
 
-class StreakQueryBuilder:
-    """Extension of StatsQueryBuilder to handle streak calculations"""
-    
-    def __init__(self, params: StatsQueryParams):
-        self.params = params
-        self.query_params: List = []
-
-    def build_select(self) -> str:
-        """Build SELECT clause for streak data"""
-        select_field = {
-            StatType.OPPOSITION: 'r.opposition',
-            StatType.MANAGER: 'm.manager_name',
-            StatType.PLAYER: 'p.player_name'
-        }[self.params.stat_type]
-        
-        return f"""
-            SELECT 
-                {select_field},
-                r.game_date,
-                r.outcome,
-                r.goals_for,
-                r.goals_against,
-                c.is_pen_shootout,
-                c.pens_outcome,
-                c.is_multi_leg
-        """
-
-    def build_joins(self) -> str:
-        """Build JOIN clauses"""
-        joins = """
-            FROM results r
-            LEFT JOIN cup_game_details c ON r.game_date = c.game_date
-            LEFT JOIN manager_reigns mr ON r.game_date >= mr.mgr_date_from
-                AND (r.game_date <= mr.mgr_date_to OR mr.mgr_date_to IS NULL)
-            LEFT JOIN managers m ON mr.manager_id = m.manager_id
-            LEFT JOIN seasons s ON r.season = s.season
-        """
-        
-        if self.params.stat_type == StatType.PLAYER:
-            joins += """
-                LEFT JOIN player_apps pa ON r.game_date = pa.game_date
-                LEFT JOIN players p ON pa.player_id = p.player_id
-            """
-            
-        return joins
-
-    def build_where_clause(self) -> str:
-        """Build WHERE clause with conditions"""
-        conditions = []
-        
-        # Base conditions
-        conditions.append("s.ssn_start >= ? AND s.ssn_start <= ?")
-        self.query_params.extend([self.params.min_season, self.params.max_season])
-
-        # Venue filter
-        venue_placeholders = ','.join(['?' for _ in self.params.venues])
-        conditions.append(f"r.venue IN ({venue_placeholders})")
-        self.query_params.extend(self.params.venues)
-
-        # Play-off filter
-        if not self.params.inc_play_offs:
-            conditions.append("COALESCE(c.is_playoff, 0) != 1")
-
-        # League tiers and competitions
-        if self.params.league_tiers or self.params.generic_comps:
-            tier_comp_conditions = []
-            if self.params.league_tiers:
-                placeholders = ','.join(['?' for _ in self.params.league_tiers])
-                tier_comp_conditions.append(f'r.league_tier IN ({placeholders})')
-                self.query_params.extend(self.params.league_tiers)
-            if self.params.generic_comps:
-                placeholders = ','.join(['?' for _ in self.params.generic_comps])
-                tier_comp_conditions.append(f'r.generic_comp IN ({placeholders})')
-                self.query_params.extend(self.params.generic_comps)
-            conditions.append('(' + ' OR '.join(tier_comp_conditions) + ')')
-
-        # Type-specific conditions
-        if self.params.stat_type == StatType.MANAGER and not self.params.inc_caretakers:
-            conditions.append('mr.mgr_role != "Caretaker"')
-        elif self.params.stat_type == StatType.PLAYER:
-            if not self.params.inc_sub_apps:
-                conditions.append("pa.role = 'starter'")
-
-        return 'WHERE ' + ' AND '.join(conditions)
-
-    def build_order_by(self) -> str:
-        """Build ORDER BY clause"""
-        group_field = {
-            StatType.OPPOSITION: 'r.opposition',
-            StatType.MANAGER: 'm.manager_name',
-            StatType.PLAYER: 'p.player_name'
-        }[self.params.stat_type]
-        
-        return f"ORDER BY {group_field}, r.game_date"
-
-    def build_query(self) -> tuple[str, List]:
-        """Build complete query and parameter list"""
-        query = f"""
-            {self.build_select()}
-            {self.build_joins()}
-            {self.build_where_clause()}
-            {self.build_order_by()}
-        """
-        
-        return query, self.query_params
 
 def prepare_streaks_df(df: pd.DataFrame, pens_as_draw: bool = True) -> pd.DataFrame:
     """Prepare DataFrame with streak indicators"""
