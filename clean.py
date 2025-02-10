@@ -142,7 +142,10 @@ Div(
 
 def get_league_pos(seasons: List[Season]):
     base_query = """
-        SELECT r.season, r.comp_game_no, r.league_pts 
+        SELECT
+            r.season,
+            CAST(r.comp_game_no AS INT) as game_no,
+            CAST(r.league_pts  AS INT) as league_pts
         FROM results r
         WHERE r.game_type = 'League'
         AND r.season IN ({})
@@ -171,17 +174,9 @@ def post(form_data: SeasonRecordsAll):
     return Table(
         Tr(
             Td(ssn['season']),
-            Td(ssn['P']),
-            Td(ssn['W']),
-            Td(ssn['D']),
-            Td(ssn['L']),
-            Td(ssn['GF']),
-            Td(ssn['GA']),
-            Td(ssn['GD']),
-            Td(f"{ssn['win_pc']:.2%}"),
-            Td(ssn['lge_pts']),
-            Td(f"{ssn['lge_ppg']:.2f}")
-        ) for ssn in get_season_records(form_data)
+            Td(ssn['game_no']),
+            Td(ssn['league_pts'])
+        ) for ssn in get_league_pos(['2024/25', '2023/24'])
     )
 
 serve()
