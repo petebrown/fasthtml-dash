@@ -65,6 +65,29 @@ class SeasonRecordsAll:
         if self.venues:
             self.venues = Venues(self.venues)
 
+@dataclass 
+class OpponentRecordsAll:
+    min_season: Season
+    max_season: Season
+    league_tiers: List[str] = field(default_factory=list)
+    inc_playoffs: bool = True
+    cup_competitions: List[str] = field(default_factory=list)
+    pens_as_draw: bool = True
+    venues: List[str] = field(default_factory=list)
+    min_meetings: int = MIN_GAMES
+
+    def __post_init__(self):
+        if isinstance(self.min_season, str):
+            self.min_season = Season(db.q("SELECT MIN(season) as season FROM seasons"))
+        if isinstance(self.max_season, str):
+            self.max_season = Season(db.q("SELECT MAX(season) as season FROM seasons"))
+        if self.league_tiers:
+            self.league_tiers = LeagueTiers(self.league_tiers)
+        if self.cup_competitions:
+            self.cup_competitions = CupCompetitions(self.cup_competitions)
+        if self.venues:
+            self.venues = Venues(self.venues)
+
 db = database('trfc.db')
 
 app, rt = fast_app()
@@ -86,8 +109,8 @@ comps = {
     'War League': 'War League'
 }
 
-def get_unique(table, col):
-    return [x[f'{col}'] for x in db.q(f"SELECT DISTINCT {table}.{col} from {table} order by {col}")]
+def get_unique(table, col, where='1=1'):
+    return [x[f'{col}'] for x in db.q(f"SELECT DISTINCT {table}.{col} FROM {table} WHERE {where} ORDER BY {col}")]
 
 comps_list = get_unique('results', 'generic_comp')
 
@@ -110,7 +133,23 @@ def checkboxes(field: str, items: dict):
 
 ssns = [1921, 2024]
 
-input_range = (Div(
+def input_range(name: str, initial_value: int, min_value: int=1, max_value: int=100, step: int=1):
+    return Div(
+        f'{min_value}',
+        Input(
+            type="range",
+            name=f"{name}",
+            value=f'{initial_value}',
+            min=f'{min_value}',
+            max=f'{max_value}',
+            step=f'{step}',
+            id=f"{name}_input",
+            hx_on_input=f"document.getElementById('{name}_display').innerText = this.value;"
+        ),
+        Span(initial_value, id=f"{name}_display")
+    )
+
+ssn_input_range = (Div(
     '1921', 
     Input(
         type="range",
@@ -156,27 +195,29 @@ def get_league_pos(seasons: List[Season]):
 
 @rt('/')
 def get():
-    return (
+    return Div(
         Form(
-            input_range,
+            ssn_input_range,
             Hr(),
             checkboxes(field='league_tiers', items=league_tiers),
-            *[CheckboxX(c, label=c) for c in get_unique('results', 'generic_comp')],
+            Hr(),
+            *[CheckboxX(c, label=c, name='cup_competitions', value=c) for c in get_unique('results', 'generic_comp', 'game_type = "Cup"')],
+            Hr(),
+            checkboxes(field='venues', items=venues),
+            Hr(),
+            input_range(name='min_meetings', initial_value=MIN_GAMES, min_value=1, max_value=65, step=1),
             hx_post='/form',
             hx_target='#result',
             hx_trigger='change'
         ),
-        Div(id='result')
+        Div(
+            id='result'
+        ),
+    style="margin: 20px;"
     )
 
 @rt('/form')
-def post(form_data: SeasonRecordsAll):
-    return Table(
-        Tr(
-            Td(ssn['season']),
-            Td(ssn['game_no']),
-            Td(ssn['league_pts'])
-        ) for ssn in get_league_pos(['2024/25', '2023/24'])
-    )
+def post(form_data: OpponentRecordsAll):
+    return form_data, form_data.min_season.season, [f'{c}, ' for c in form_data.cup_competitions.cup_competitions]
 
 serve()
