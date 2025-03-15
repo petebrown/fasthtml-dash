@@ -1,13 +1,12 @@
 from re import search
 from fasthtml.common import *
 from dataclasses import dataclass, field
-from typing import Optional, List
 import math
 
 db = database('trfc.db')
 
 @dataclass
-class Head2HeadAll:
+class FormInputs:
     min_season: int
     max_season: int
     league_tiers: list[str] = field(default_factory=list)
@@ -134,7 +133,7 @@ def get():
                         hx_trigger='keyup changed delay:500ms'
                 ),
                 html_h2h_all(
-                    sql_h2h_all(Head2HeadAll(min_season=1921, max_season=2024, league_tiers=['2','3','4','5'], cup_competitions=cup_competitions, pens_as_draw=True, venues=['H','A','N'], min_meetings=10)
+                    sql_h2h_all(FormInputs(min_season=1921, max_season=2024, league_tiers=['2','3','4','5'], cup_competitions=cup_competitions, pens_as_draw=True, venues=['H','A','N'], min_meetings=10)
                 )[0]),
                 input_dropdown(
                     name='tab_recs_per_page', 
@@ -161,7 +160,7 @@ def get():
         cls='row'),
     cls='container-fluid')
 
-def sql_h2h_all(inputs: Head2HeadAll):
+def sql_h2h_all(inputs: FormInputs):
     limit = f'{inputs.tab_recs_per_page}'
     offset = f', {(inputs.tab_page_no-1) * inputs.tab_recs_per_page}' if inputs.tab_page_no > 1 else ''
     search_terms = f'AND LOWER(r.opposition) LIKE "%{inputs.search_terms.lower()}%"' if inputs.search_terms else ''
@@ -174,19 +173,13 @@ def sql_h2h_all(inputs: Head2HeadAll):
                     WHEN (
                         {int(inputs.pens_as_draw)} = 0
                         AND (
-                            (
-                                r.pens_outcome IS NULL
-                                AND r.outcome = 'W'
-                            )
-                            OR (
-                                r.pens_outcome IS NOT NULL
-                                AND r.pens_outcome = 'W'
-                            )
+                                (r.pens_outcome IS NULL AND r.outcome = 'W')
+                            OR 
+                                (r.pens_outcome IS NOT NULL AND r.pens_outcome = 'W')
                         )
                     )
                     OR (
-                        {int(inputs.pens_as_draw)} = 1
-                        AND r.outcome = 'W'
+                        {int(inputs.pens_as_draw)} = 1 AND r.outcome = 'W'
                     ) THEN 1
                 END
             ) AS W,
@@ -195,13 +188,11 @@ def sql_h2h_all(inputs: Head2HeadAll):
                     WHEN (
                         {int(inputs.pens_as_draw)} = 0
                         AND (
-                            r.pens_outcome IS NULL
-                            AND r.outcome = 'D'
+                            r.pens_outcome IS NULL AND r.outcome = 'D'
                         )
                     )
                     OR (
-                        {int(inputs.pens_as_draw)} = 1
-                        AND r.outcome = 'D'
+                        {int(inputs.pens_as_draw)} = 1 AND r.outcome = 'D'
                     ) THEN 1
                 END
             ) AS D,
@@ -210,19 +201,13 @@ def sql_h2h_all(inputs: Head2HeadAll):
                     WHEN (
                         {int(inputs.pens_as_draw)} = 0
                         AND (
-                            (
-                                r.pens_outcome IS NULL
-                                AND r.outcome = 'L'
-                            )
-                            OR (
-                                r.pens_outcome IS NOT NULL
-                                AND r.pens_outcome = 'L'
-                            )
+                                (r.pens_outcome IS NULL AND r.outcome = 'L')
+                            OR 
+                                (r.pens_outcome IS NOT NULL AND r.pens_outcome = 'L')
                         )
                     )
                     OR (
-                        {int(inputs.pens_as_draw)} = 1
-                        AND r.outcome = 'L'
+                        {int(inputs.pens_as_draw)} = 1 AND r.outcome = 'L'
                     ) THEN 1
                 END
             ) AS L,
@@ -236,17 +221,14 @@ def sql_h2h_all(inputs: Head2HeadAll):
                             WHEN (
                                 {int(inputs.pens_as_draw)} = 0
                                 AND (
-                                    r.pens_outcome IS NOT NULL
-                                    AND r.pens_outcome = 'W'
+                                    r.pens_outcome IS NOT NULL AND r.pens_outcome = 'W'
                                 )
                                 OR (
-                                    r.pens_outcome IS NULL
-                                    AND r.outcome = 'W'
+                                    r.pens_outcome IS NULL AND r.outcome = 'W'
                                 )
                             )
                             OR (
-                                {int(inputs.pens_as_draw)} = 1
-                                AND r.outcome = 'W'
+                                {int(inputs.pens_as_draw)} = 1 AND r.outcome = 'W'
                             ) THEN 1
                         END
                     ) AS FLOAT
@@ -309,7 +291,7 @@ sort_col = {}
 print(f'global sort_col is {sort_col}')
 
 @rt('/head2head_all')
-def post(inputs: Head2HeadAll):
+def post(inputs: FormInputs):
     global sort_cols
     sort_col = inputs.tab_sort_col
     print(f'sort_col is {sort_col}')
@@ -321,7 +303,7 @@ def post(inputs: Head2HeadAll):
 
     page = inputs.tab_page_no
     recs_per_page = inputs.tab_recs_per_page
-    return (
+    return Div(
         Div(
             Input(
                 type='text',
@@ -334,7 +316,9 @@ def post(inputs: Head2HeadAll):
                 hx_trigger='keyup changed delay:500ms'
             )
         ),
-        html_h2h_all(records),
+        Div(
+            html_h2h_all(records)
+        ),
         Grid(
             Div(
                 input_dropdown(
@@ -367,9 +351,9 @@ def post(inputs: Head2HeadAll):
                     hx_trigger='change',
                     style='width: auto'
                 ),
-                Span(f" of {math.ceil(n_recs/inputs.tab_recs_per_page +1)}"),
+                Span(f" of {math.ceil(n_recs/inputs.tab_recs_per_page)}"),
             style='text-align: right')
-        )        
-    )
+        ),
+    cls='container')
 
 serve()

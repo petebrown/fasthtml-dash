@@ -220,4 +220,38 @@ def get():
 def post(form_data: OpponentRecordsAll):
     return form_data, form_data.min_season.season, [f'{c}, ' for c in form_data.cup_competitions.cup_competitions]
 
+@rt('/results')
+def get():
+    res = db.q("SELECT * FROM full_results WHERE ssn_start = 2024")
+    return Div(
+        *[Grid(
+            Div(r['season']),
+            Div(r['game_date'],
+                hx_get=f'/game/{r["game_date"]}',
+                hx_target=f"#d_{r['game_date'].replace('-', '')}",
+                hx_trigger='click'
+            ),
+            Div(r['game_no']),
+            Div(r['opposition']),
+            Div(r['venue']),
+            Div(r['goalscorers']), id=f"d_{r['game_date'].replace('-', '')}") for r in res],
+
+    cls='container')
+
+@rt('/game/{game_date}')
+def get(game_date: str):
+    r = db.q(f"SELECT * FROM full_results WHERE game_date = '{game_date}'")[0]
+    print(r)
+    return Div(
+            Div(r['season']),
+            Div(r['game_date'],
+                hx_get=f'/game/{r["game_date"]}',
+                hx_target=f"#d_{r['game_date'].replace('-', '')}",
+                hx_trigger='click'
+            ),
+            Div(r['game_no']),
+            Div(r['opposition']),
+            Div(r['venue']),
+            Div(r['goalscorers']), id=f"d_{r['game_date'].replace('-', '')}"), Grid(Div('hahahahahahahah'))
+
 serve()
